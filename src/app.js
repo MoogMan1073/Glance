@@ -1,0 +1,712 @@
+// ============================================================
+// Simple Markdown Reader — application logic
+// Plain JS, no build step. Talks to Tauri through the small
+// facade below so the UI also runs (and is tested) in a browser.
+// ============================================================
+(function () {
+  'use strict';
+
+  // ---------------- Tauri facade ----------------
+
+  const T = window.__TAURI__ || null;
+
+  const tauri = {
+    available: !!T,
+    invoke: (cmd, args) => T ? T.core.invoke(cmd, args) : Promise.reject(new Error('Tauri unavailable')),
+    ask: (msg, opts) => T ? T.dialog.ask(msg, opts) : Promise.resolve(window.confirm(msg)),
+    openDialog: (opts) => T ? T.dialog.open(opts) : Promise.resolve(null),
+    saveDialog: (opts) => T ? T.dialog.save(opts) : Promise.resolve(null),
+    openUrl: (url) => T ? T.opener.openUrl(url) : Promise.resolve(window.open(url, '_blank')),
+    setTitle: (title) => { if (T) T.window.getCurrentWindow().setTitle(title).catch(() => {}); },
+    currentWindow: () => T ? T.window.getCurrentWindow() : null,
+    currentWebview: () => (T && T.webview) ? T.webview.getCurrentWebview() : null,
+  };
+
+  const MD_FILTERS = [
+    { name: 'Markdown', extensions: ['md', 'markdown', 'mdown', 'mkd'] },
+    { name: 'Text', extensions: ['txt'] },
+    { name: 'All files', extensions: ['*'] },
+  ];
+  const MD_EXT_RE = /\.(md|markdown|mdown|mkd|txt)$/i;
+
+  // ---------------- Elements ----------------
+
+  const editor = document.getElementById('editor');
+  const preview = document.getElementById('preview');
+  const previewPane = document.getElementById('previewPane');
+  const headingSelect = document.getElementById('sel-heading');
+  const themeBtn = document.getElementById('btn-theme');
+  const helpOverlay = document.getElementById('helpOverlay');
+  const helpContent = document.getElementById('helpContent');
+  const toast = document.getElementById('toast');
+
+  // ---------------- State ----------------
+
+  let currentPath = null;      // absolute path of the open file, or null for a new doc
+  let savedContent = '';       // editor content at last load/save
+  let previewStale = true;     // preview needs re-render
+  let helpLoaded = false;
+
+  const isDirty = () => editor.value !== savedContent;
+
+  // ---------------- Markdown renderer ----------------
+
+  function buildRenderer() {
+    const md = window.markdownit({
+      html: false,          // never interpret raw HTML from documents
+      linkify: true,
+      breaks: false,
+      highlight: (str, lang) => {
+        if (window.hljs && lang && window.hljs.getLanguage(lang)) {
+          try { return window.hljs.highlight(str, { language: lang, ignoreIllegals: true }).value; }
+          catch (e) { /* fall through to escaping */ }
+        }
+        return '';
+      },
+    });
+    const use = (plugin, ...opts) => { if (plugin) md.use(plugin, ...opts); };
+    use(window.markdownitTaskLists, { label: true });
+    use(window.markdownitFootnote);
+    use(window.markdownitDeflist);
+    use(window.markdownitMark);
+    use(window.markdownitSub);
+    use(window.markdownitSup);
+    const emoji = window.markdownitEmoji;
+    use(emoji && (emoji.full || emoji.default || emoji));
+    use(window.markdownItAttrs, { allowedAttributes: ['id', 'class'] });
+    return md;
+  }
+
+  const md = buildRenderer();
+
+  function renderPreview() {
+    preview.innerHTML = md.render(editor.value);
+    previewStale = false;
+  }
+
+  let renderTimer = null;
+  function scheduleRender() {
+    previewStale = true;
+    if (document.body.dataset.view === 'edit') return; // render lazily when preview becomes visible
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(() => { if (previewStale) renderPreview(); }, 120);
+  }
+
+  // ---------------- Toast ----------------
+
+  let toastTimer = null;
+  function showToast(message, isError) {
+    toast.textContent = message;
+    toast.classList.toggle('error', !!isError);
+    toast.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toast.hidden = true; }, isError ? 5000 : 1800);
+  }
+
+  // ---------------- Title ----------------
+
+  function baseName(path) {
+    return path ? path.split(/[\\/]/).pop() : 'Untitled';
+  }
+
+  function updateTitle() {
+    const title = `${isDirty() ? '● ' : ''}${baseName(currentPath)} - Simple Markdown Reader`;
+    document.title = title;
+    tauri.setTitle(title);
+  }
+
+  // ---------------- Views ----------------
+
+  const VIEWS = ['edit', 'split', 'read'];
+
+  function setView(view) {
+    if (!VIEWS.includes(view)) return;
+    document.body.dataset.view = view;
+    for (const v of VIEWS) {
+      document.getElementById('btn-view-' + v).classList.toggle('active', v === view);
+    }
+    if (view !== 'edit' && previewStale) renderPreview();
+    if (view !== 'read') editor.focus();
+  }
+
+  // ---------------- Theme ----------------
+
+  const THEMES = ['system', 'light', 'dark'];
+  const THEME_ICONS = {
+    system: '<svg viewBox="0 0 16 16"><path d="M1.5 3.5A1.5 1.5 0 0 1 3 2h10a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 13 12H9.5v1.5H11a.75.75 0 0 1 0 1.5H5a.75.75 0 0 1 0-1.5h1.5V12H3a1.5 1.5 0 0 1-1.5-1.5v-7zM3 3.5v7h10v-7H3z" fill="currentColor"/></svg>',
+    light: '<svg viewBox="0 0 16 16"><path d="M8 4.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zM8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13zM0 8a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5H.75A.75.75 0 0 1 0 8zm13 0a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 13 8zM2.34 2.34a.75.75 0 0 1 1.06 0l1.06 1.06a.75.75 0 1 1-1.06 1.06L2.34 3.4a.75.75 0 0 1 0-1.06zm9.2 9.2a.75.75 0 0 1 1.06 0l1.06 1.06a.75.75 0 1 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06zm2.12-9.2a.75.75 0 0 1 0 1.06L12.6 4.46a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0zm-9.2 9.2a.75.75 0 0 1 0 1.06L3.4 13.66a.75.75 0 0 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0z" fill="currentColor"/></svg>',
+    dark: '<svg viewBox="0 0 16 16"><path d="M6.2 1.2a6.8 6.8 0 1 0 8.6 8.6A5.9 5.9 0 0 1 6.2 1.2z" fill="currentColor"/></svg>',
+  };
+
+  let themePref = 'system';
+  try { themePref = localStorage.getItem('smr-theme') || 'system'; } catch (e) {}
+  if (!THEMES.includes(themePref)) themePref = 'system';
+
+  const darkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+  function applyTheme() {
+    const effective = themePref === 'system'
+      ? (darkQuery && darkQuery.matches ? 'dark' : 'light')
+      : themePref;
+    document.body.dataset.theme = effective;
+    document.documentElement.dataset.bootTheme = effective;
+    const light = document.getElementById('hljs-light');
+    const dark = document.getElementById('hljs-dark');
+    if (light) light.disabled = effective === 'dark';
+    if (dark) dark.disabled = effective !== 'dark';
+    const label = themePref.charAt(0).toUpperCase() + themePref.slice(1);
+    themeBtn.title = `Theme: ${label} (Ctrl+Shift+D)`;
+    themeBtn.innerHTML = THEME_ICONS[themePref];
+  }
+
+  function cycleTheme() {
+    themePref = THEMES[(THEMES.indexOf(themePref) + 1) % THEMES.length];
+    try { localStorage.setItem('smr-theme', themePref); } catch (e) {}
+    applyTheme();
+    showToast(`Theme: ${themePref}`);
+  }
+
+  if (darkQuery && darkQuery.addEventListener) {
+    darkQuery.addEventListener('change', () => { if (themePref === 'system') applyTheme(); });
+  }
+
+  // ---------------- Editor text manipulation ----------------
+  // All edits go through execCommand('insertText') so the native
+  // undo/redo stack (Ctrl+Z / Ctrl+Y) keeps working.
+
+  function replaceRange(start, end, text, selStart, selEnd) {
+    editor.focus();
+    editor.setSelectionRange(start, end);
+    let ok = false;
+    try {
+      ok = text === ''
+        ? document.execCommand('delete')
+        : document.execCommand('insertText', false, text);
+    } catch (e) { ok = false; }
+    if (!ok) {
+      editor.setRangeText(text, start, end, 'end');
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if (selStart !== undefined) {
+      editor.setSelectionRange(selStart, selEnd === undefined ? selStart : selEnd);
+    }
+  }
+
+  // The full lines covered by the current selection.
+  function selectedLineRange() {
+    const value = editor.value;
+    let selStart = editor.selectionStart;
+    let selEnd = editor.selectionEnd;
+    // A selection ending just after a newline shouldn't pull in the next line.
+    if (selEnd > selStart && value[selEnd - 1] === '\n') selEnd -= 1;
+    const start = value.lastIndexOf('\n', selStart - 1) + 1;
+    let end = value.indexOf('\n', selEnd);
+    if (end === -1) end = value.length;
+    return { start, end };
+  }
+
+  function transformSelectedLines(fn) {
+    const { start, end } = selectedLineRange();
+    const block = editor.value.slice(start, end);
+    const newBlock = fn(block.split('\n')).join('\n');
+    if (newBlock === block) return;
+    replaceRange(start, end, newBlock, start, start + newBlock.length);
+  }
+
+  const LIST_MARKER_RE = /^(\s*)(?:[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+[.)]\s+)/;
+
+  function stripListMarker(line) {
+    return line.replace(LIST_MARKER_RE, '$1');
+  }
+
+  // Toggle a marker at the start of each selected line (after indentation).
+  function toggleLinePrefix(kind) {
+    const testers = {
+      ul: (l) => /^\s*[-*+]\s+(?!\[[ xX]\]\s)/.test(l),
+      ol: (l) => /^\s*\d+[.)]\s+/.test(l),
+      task: (l) => /^\s*[-*+]\s+\[[ xX]\]\s+/.test(l),
+      quote: (l) => /^\s*>\s?/.test(l),
+    };
+    transformSelectedLines((lines) => {
+      const content = lines.filter((l) => l.trim() !== '');
+      const allSet = content.length > 0 && content.every(testers[kind]);
+      let n = 0;
+      return lines.map((line) => {
+        if (line.trim() === '') return line;
+        if (kind === 'quote') {
+          return allSet ? line.replace(/^(\s*)>\s?/, '$1') : '> ' + line;
+        }
+        const indent = (line.match(/^\s*/) || [''])[0];
+        const rest = stripListMarker(line).slice(indent.length);
+        if (allSet) return indent + rest;
+        n += 1;
+        const marker = kind === 'ul' ? '- ' : kind === 'task' ? '- [ ] ' : `${n}. `;
+        return indent + marker + rest;
+      });
+    });
+  }
+
+  function applyHeading(level) {
+    transformSelectedLines((lines) =>
+      lines.map((line) => {
+        if (line.trim() === '' && level > 0) return line;
+        const rest = line.replace(/^\s*#{1,6}\s+/, '');
+        return level > 0 ? '#'.repeat(level) + ' ' + rest : rest;
+      })
+    );
+    updateHeadingSelect();
+  }
+
+  function currentLineHeadingLevel() {
+    const value = editor.value;
+    const start = value.lastIndexOf('\n', editor.selectionStart - 1) + 1;
+    const m = value.slice(start, start + 8).match(/^(#{1,6})\s/);
+    return m ? m[1].length : 0;
+  }
+
+  function updateHeadingSelect() {
+    headingSelect.value = String(currentLineHeadingLevel());
+  }
+
+  // Wrap or unwrap the selection with inline markers.
+  function toggleInline(marker, endMarker) {
+    endMarker = endMarker || marker;
+    const value = editor.value;
+    const s = editor.selectionStart;
+    const e = editor.selectionEnd;
+    const sel = value.slice(s, e);
+
+    // Selection includes the markers: **bold** -> bold
+    if (sel.length >= marker.length + endMarker.length &&
+        sel.startsWith(marker) && sel.endsWith(endMarker)) {
+      const inner = sel.slice(marker.length, sel.length - endMarker.length);
+      replaceRange(s, e, inner, s, s + inner.length);
+      return;
+    }
+    // Markers just outside the selection: **|bold|** -> bold
+    if (value.slice(s - marker.length, s) === marker &&
+        value.slice(e, e + endMarker.length) === endMarker) {
+      replaceRange(s - marker.length, e + endMarker.length, sel,
+        s - marker.length, s - marker.length + sel.length);
+      return;
+    }
+    // Wrap.
+    replaceRange(s, e, marker + sel + endMarker,
+      s + marker.length, s + marker.length + sel.length);
+  }
+
+  function insertSnippet(before, placeholder, after) {
+    const s = editor.selectionStart;
+    const e = editor.selectionEnd;
+    const sel = editor.value.slice(s, e) || placeholder;
+    const text = before + sel + after;
+    replaceRange(s, e, text, s + before.length, s + before.length + sel.length);
+  }
+
+  function insertLink() {
+    const sel = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+    if (/^https?:\/\/\S+$/.test(sel)) {
+      // Selection is a URL: make it the target, select the text slot.
+      const s = editor.selectionStart;
+      const text = `[text](${sel})`;
+      replaceRange(s, editor.selectionEnd, text, s + 1, s + 5);
+    } else if (sel) {
+      const s = editor.selectionStart;
+      const text = `[${sel}](url)`;
+      replaceRange(s, editor.selectionEnd, text, s + sel.length + 3, s + sel.length + 6);
+    } else {
+      insertSnippet('[', 'text', '](url)');
+    }
+  }
+
+  // Insert text that must sit on its own line(s).
+  function insertBlock(block, caretOffset) {
+    const value = editor.value;
+    const s = editor.selectionStart;
+    const atLineStart = s === 0 || value[s - 1] === '\n';
+    const before = atLineStart ? '' : '\n';
+    const e = editor.selectionEnd;
+    const atLineEnd = e === value.length || value[e] === '\n';
+    const after = atLineEnd ? '' : '\n';
+    const text = before + block + after;
+    const caret = caretOffset === undefined ? s + text.length : s + before.length + caretOffset;
+    replaceRange(s, e, text, caret);
+  }
+
+  function insertCodeBlock() {
+    const value = editor.value;
+    const s = editor.selectionStart;
+    const e = editor.selectionEnd;
+    const sel = value.slice(s, e);
+    const atLineStart = s === 0 || value[s - 1] === '\n';
+    const before = (atLineStart ? '' : '\n') + '```';
+    const atEnd = e === value.length || value[e] === '\n';
+    const text = before + '\n' + sel + '\n```' + (atEnd ? '' : '\n');
+    // Caret right after the opening fence so a language can be typed.
+    replaceRange(s, e, text, s + before.length);
+  }
+
+  function insertTable() {
+    insertBlock(
+      '| Column 1 | Column 2 |\n| -------- | -------- |\n| Text     | Text     |\n'
+    );
+  }
+
+  // ---------------- List continuation & Tab handling ----------------
+
+  function handleEnter(event) {
+    if (event.shiftKey || event.ctrlKey || event.altKey) return;
+    if (editor.selectionStart !== editor.selectionEnd) return;
+    const value = editor.value;
+    const caret = editor.selectionStart;
+    const lineStart = value.lastIndexOf('\n', caret - 1) + 1;
+    const line = value.slice(lineStart, caret);
+
+    const task = line.match(/^(\s*)([-*+])\s+\[[ xX]\]\s+(.*)$/);
+    const bullet = task ? null : line.match(/^(\s*)([-*+])\s+(.*)$/);
+    const ordered = task || bullet ? null : line.match(/^(\s*)(\d+)([.)])\s+(.*)$/);
+    if (!task && !bullet && !ordered) return;
+
+    event.preventDefault();
+    const content = task ? task[3] : bullet ? bullet[3] : ordered[4];
+    if (content.trim() === '') {
+      // Enter on an empty list item ends the list (Word-like).
+      replaceRange(lineStart, caret, '', lineStart);
+      return;
+    }
+    let next;
+    if (task) next = `\n${task[1]}${task[2]} [ ] `;
+    else if (bullet) next = `\n${bullet[1]}${bullet[2]} `;
+    else next = `\n${ordered[1]}${Number(ordered[2]) + 1}${ordered[3]} `;
+    replaceRange(caret, editor.selectionEnd, next, caret + next.length);
+  }
+
+  function handleTab(event) {
+    event.preventDefault();
+    const outdent = event.shiftKey;
+    const multiline = editor.value
+      .slice(editor.selectionStart, editor.selectionEnd)
+      .includes('\n');
+    const value = editor.value;
+    const lineStart = value.lastIndexOf('\n', editor.selectionStart - 1) + 1;
+    const onListLine = LIST_MARKER_RE.test(value.slice(lineStart, lineStart + 24));
+
+    if (!outdent && !multiline && !onListLine) {
+      replaceRange(editor.selectionStart, editor.selectionEnd, '  ');
+      return;
+    }
+    transformSelectedLines((lines) =>
+      lines.map((line) =>
+        outdent ? line.replace(/^ {1,2}/, '') : (line.trim() === '' ? line : '  ' + line)
+      )
+    );
+  }
+
+  // ---------------- File operations ----------------
+
+  async function confirmDiscard(question) {
+    if (!isDirty()) return true;
+    return tauri.ask(question, { title: 'Simple Markdown Reader', kind: 'warning' });
+  }
+
+  function loadContent(path, content) {
+    currentPath = path;
+    savedContent = content;
+    editor.value = content;
+    previewStale = true;
+    if (document.body.dataset.view !== 'edit') renderPreview();
+    updateTitle();
+    updateHeadingSelect();
+    if (previewPane) previewPane.scrollTop = 0;
+    editor.setSelectionRange(0, 0);
+    editor.scrollTop = 0;
+  }
+
+  async function openPath(path) {
+    try {
+      const content = await tauri.invoke('read_text_file', { path });
+      loadContent(path, content);
+    } catch (err) {
+      showToast(String(err), true);
+    }
+  }
+
+  async function fileNew() {
+    if (!(await confirmDiscard('You have unsaved changes. Discard them?'))) return;
+    loadContent(null, '');
+    setView('edit');
+  }
+
+  async function fileOpen() {
+    if (!(await confirmDiscard('You have unsaved changes. Discard them?'))) return;
+    const path = await tauri.openDialog({ multiple: false, filters: MD_FILTERS });
+    if (typeof path === 'string' && path) await openPath(path);
+  }
+
+  async function writeTo(path) {
+    try {
+      await tauri.invoke('write_text_file', { path, contents: editor.value });
+      currentPath = path;
+      savedContent = editor.value;
+      updateTitle();
+      showToast('Saved');
+      return true;
+    } catch (err) {
+      showToast(String(err), true);
+      return false;
+    }
+  }
+
+  async function fileSaveAs() {
+    let path = await tauri.saveDialog({
+      defaultPath: currentPath || 'Untitled.md',
+      filters: MD_FILTERS,
+    });
+    if (!path) return false;
+    if (!/\.[^\\/.]+$/.test(path)) path += '.md';
+    return writeTo(path);
+  }
+
+  async function fileSave() {
+    if (!currentPath) return fileSaveAs();
+    return writeTo(currentPath);
+  }
+
+  // ---------------- Help ----------------
+
+  async function loadHelp() {
+    if (helpLoaded) return;
+    try {
+      const res = await fetch('help.md');
+      helpContent.innerHTML = md.render(await res.text());
+      helpLoaded = true;
+    } catch (e) {
+      helpContent.textContent = 'Help content could not be loaded.';
+    }
+  }
+
+  function toggleHelp(force) {
+    const show = force !== undefined ? force : helpOverlay.hidden;
+    helpOverlay.hidden = !show;
+    if (show) loadHelp();
+    else if (document.body.dataset.view !== 'read') editor.focus();
+  }
+
+  // ---------------- Link handling in rendered panes ----------------
+
+  function handleRenderedClick(event, container) {
+    const link = event.target.closest('a[href]');
+    if (!link) return;
+    event.preventDefault();
+    const href = link.getAttribute('href');
+    if (href.startsWith('#')) {
+      let target = null;
+      try { target = container.querySelector(`[id="${CSS.escape(decodeURIComponent(href.slice(1)))}"]`); }
+      catch (e) {}
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (/^https?:\/\//i.test(href)) {
+      tauri.openUrl(href).catch(() => showToast('Could not open link', true));
+    }
+    // Everything else (mailto:, relative paths) is intentionally ignored.
+  }
+
+  preview.addEventListener('click', (e) => handleRenderedClick(e, preview));
+  helpContent.addEventListener('click', (e) => handleRenderedClick(e, helpContent));
+
+  // ---------------- Scroll sync (split view) ----------------
+
+  let syncing = false;
+
+  function syncScroll(from, to) {
+    if (document.body.dataset.view !== 'split' || syncing) return;
+    const fromMax = from.scrollHeight - from.clientHeight;
+    const toMax = to.scrollHeight - to.clientHeight;
+    if (fromMax <= 0 || toMax <= 0) return;
+    syncing = true;
+    to.scrollTop = (from.scrollTop / fromMax) * toMax;
+    requestAnimationFrame(() => { syncing = false; });
+  }
+
+  editor.addEventListener('scroll', () => syncScroll(editor, previewPane));
+  previewPane.addEventListener('scroll', () => syncScroll(previewPane, editor));
+
+  // ---------------- Toolbar wiring ----------------
+
+  const on = (id, fn) => document.getElementById(id).addEventListener('click', fn);
+
+  on('btn-new', fileNew);
+  on('btn-open', fileOpen);
+  on('btn-save', fileSave);
+  on('btn-saveas', fileSaveAs);
+  on('btn-bold', () => toggleInline('**'));
+  on('btn-italic', () => toggleInline('*'));
+  on('btn-strike', () => toggleInline('~~'));
+  on('btn-mark', () => toggleInline('=='));
+  on('btn-code', () => toggleInline('`'));
+  on('btn-codeblock', insertCodeBlock);
+  on('btn-link', insertLink);
+  on('btn-image', () => insertSnippet('![', 'alt text', '](url)'));
+  on('btn-quote', () => toggleLinePrefix('quote'));
+  on('btn-ul', () => toggleLinePrefix('ul'));
+  on('btn-ol', () => toggleLinePrefix('ol'));
+  on('btn-task', () => toggleLinePrefix('task'));
+  on('btn-table', insertTable);
+  on('btn-hr', () => insertBlock('---\n'));
+  on('btn-view-edit', () => setView('edit'));
+  on('btn-view-split', () => setView('split'));
+  on('btn-view-read', () => setView('read'));
+  on('btn-theme', cycleTheme);
+  on('btn-help', () => toggleHelp());
+  on('btn-help-close', () => toggleHelp(false));
+
+  helpOverlay.addEventListener('click', (e) => {
+    if (e.target === helpOverlay) toggleHelp(false);
+  });
+
+  headingSelect.addEventListener('change', () => {
+    applyHeading(Number(headingSelect.value));
+    editor.focus();
+  });
+
+  // ---------------- Editor events ----------------
+
+  editor.addEventListener('input', () => {
+    scheduleRender();
+    updateTitle();
+  });
+
+  editor.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleEnter(e);
+    else if (e.key === 'Tab') handleTab(e);
+  });
+
+  ['keyup', 'click', 'focus'].forEach((ev) =>
+    editor.addEventListener(ev, updateHeadingSelect)
+  );
+
+  // ---------------- Keyboard shortcuts ----------------
+
+  const editingVisible = () => document.body.dataset.view !== 'read';
+
+  window.addEventListener('keydown', (e) => {
+    const ctrl = e.ctrlKey || e.metaKey;
+
+    // Keys that work everywhere.
+    if (e.key === 'F1') { e.preventDefault(); toggleHelp(); return; }
+    if (e.key === 'Escape' && !helpOverlay.hidden) { toggleHelp(false); return; }
+    if (e.key === 'F5' || (ctrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'r')) {
+      e.preventDefault(); return; // block webview reload — it would silently drop the document
+    }
+    if (!ctrl) return;
+
+    if (!e.shiftKey && !e.altKey) {
+      switch (e.key.toLowerCase()) {
+        case 'n': e.preventDefault(); fileNew(); return;
+        case 'o': e.preventDefault(); fileOpen(); return;
+        case 's': e.preventDefault(); fileSave(); return;
+        case 'w': {
+          e.preventDefault();
+          const win = tauri.currentWindow();
+          if (win) win.close();
+          return;
+        }
+      }
+      switch (e.code) {
+        case 'Digit1': e.preventDefault(); setView('edit'); return;
+        case 'Digit2': e.preventDefault(); setView('split'); return;
+        case 'Digit3': e.preventDefault(); setView('read'); return;
+      }
+    }
+
+    if (e.shiftKey && !e.altKey) {
+      switch (e.key.toLowerCase()) {
+        case 's': e.preventDefault(); fileSaveAs(); return;
+        case 'd': e.preventDefault(); cycleTheme(); return;
+      }
+    }
+
+    // Formatting shortcuts only apply while the editor is visible.
+    if (!editingVisible()) return;
+
+    if (e.altKey && !e.shiftKey) {
+      const m = e.code.match(/^Digit([0-6])$/);
+      if (m) { e.preventDefault(); applyHeading(Number(m[1])); }
+      return;
+    }
+
+    if (!e.shiftKey) {
+      switch (e.key.toLowerCase()) {
+        case 'b': e.preventDefault(); toggleInline('**'); return;
+        case 'i': e.preventDefault(); toggleInline('*'); return;
+        case 'e': e.preventDefault(); toggleInline('`'); return;
+        case 'k': e.preventDefault(); insertLink(); return;
+      }
+      return;
+    }
+
+    // Ctrl+Shift+…
+    switch (e.code) {
+      case 'Digit7': e.preventDefault(); toggleLinePrefix('ol'); return;
+      case 'Digit8': e.preventDefault(); toggleLinePrefix('ul'); return;
+      case 'Digit9': e.preventDefault(); toggleLinePrefix('task'); return;
+    }
+    switch (e.key.toLowerCase()) {
+      case 'x': e.preventDefault(); toggleInline('~~'); return;
+      case 'h': e.preventDefault(); toggleInline('=='); return;
+      case 'c': e.preventDefault(); insertCodeBlock(); return;
+      case 'q': e.preventDefault(); toggleLinePrefix('quote'); return;
+    }
+  });
+
+  // ---------------- Window close & file drop ----------------
+
+  const win = tauri.currentWindow();
+  if (win && win.onCloseRequested) {
+    win.onCloseRequested(async (event) => {
+      if (!isDirty()) return;
+      const close = await tauri.ask(
+        'You have unsaved changes. Close without saving?',
+        { title: 'Simple Markdown Reader', kind: 'warning' }
+      );
+      if (!close) event.preventDefault();
+    });
+  }
+
+  const webview = tauri.currentWebview();
+  if (webview && webview.onDragDropEvent) {
+    webview.onDragDropEvent(async (event) => {
+      const payload = event.payload;
+      if (!payload || payload.type !== 'drop' || !payload.paths || !payload.paths.length) return;
+      const path = payload.paths.find((p) => MD_EXT_RE.test(p));
+      if (!path) return;
+      if (!(await confirmDiscard('You have unsaved changes. Discard them?'))) return;
+      await openPath(path);
+    });
+  }
+
+  // ---------------- Startup ----------------
+
+  async function init() {
+    applyTheme();
+    let launchPath = null;
+    if (tauri.available) {
+      try { launchPath = await tauri.invoke('launch_file_path'); } catch (e) {}
+    }
+    if (launchPath) {
+      // Opened with a file (double-click in Explorer): reading is the intent.
+      await openPath(launchPath);
+      setView('read');
+    } else {
+      loadContent(null, '');
+      setView('edit');
+    }
+    updateTitle();
+    if (window.__showAppWindow) window.__showAppWindow();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();

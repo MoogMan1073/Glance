@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Simple Markdown Reader",
+  "version": "1.0.0",
+  "identifier": "io.github.moogman1073.simple-markdown-reader",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' asset: http: https: data:; connect-src 'self'"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Simple Markdown Reader",
+        "width": 1080,
+        "height": 740,
+        "minWidth": 480,
+        "minHeight": 320,
+        "center": true,
+        "visible": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "category": "Productivity",
+    "shortDescription": "Fast, minimal Markdown reader and editor",
+    "longDescription": "A simple, quick-to-launch desktop application for reading and editing Markdown files, with edit, display, and side-by-side views.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["md", "markdown"],
+        "name": "Markdown Document",
+        "description": "Markdown text document",
+        "mimeType": "text/markdown",
+        "role": "Editor"
+      }
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

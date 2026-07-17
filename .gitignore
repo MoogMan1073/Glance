@@ -1,0 +1,5 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+tests/test-results/
+tests/playwright-report/
