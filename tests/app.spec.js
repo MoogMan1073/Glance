@@ -277,13 +277,41 @@ test('code block button fences the selection', async ({ page }) => {
   expect(await editorValue(page)).toBe('```\nlet x = 1;\n```');
 });
 
-test('table and hr buttons insert templates on their own lines', async ({ page }) => {
+test('hr under a paragraph gets a blank line so it does not become a setext heading', async ({ page }) => {
   await boot(page);
+  await page.keyboard.press('Control+2');
   await setEditor(page, 'above', 5, 5);
   await page.click('#btn-hr');
-  expect(await editorValue(page)).toBe('above\n---\n');
+  expect(await editorValue(page)).toBe('above\n\n---\n');
+  await expect(page.locator('#preview hr')).toHaveCount(1);
+  await expect(page.locator('#preview h2')).toHaveCount(0);
   await page.click('#btn-table');
   expect(await editorValue(page)).toContain('| Column 1 | Column 2 |');
+});
+
+test('indenting with a collapsed caret keeps the caret collapsed', async ({ page }) => {
+  await boot(page);
+  await setEditor(page, '- item', 6, 6);
+  await page.keyboard.press('Tab');
+  expect(await editorValue(page)).toBe('  - item');
+  await page.keyboard.type('s'); // must append, not replace a selected line
+  expect(await editorValue(page)).toBe('  - items');
+});
+
+test('Ctrl+I on a word inside bold adds italic instead of destroying bold', async ({ page }) => {
+  await boot(page);
+  await setEditor(page, 'a **bold** b', 4, 8); // "bold" selected inside the stars
+  await page.keyboard.press('Control+i');
+  expect(await editorValue(page)).toBe('a ***bold*** b');
+  await page.keyboard.press('Control+i'); // and back off again
+  expect(await editorValue(page)).toBe('a **bold** b');
+});
+
+test('Enter just after a list marker splits the item instead of deleting the marker', async ({ page }) => {
+  await boot(page);
+  await setEditor(page, '- item two', 2, 2); // caret between "- " and "item"
+  await page.keyboard.press('Enter');
+  expect(await editorValue(page)).toBe('- \n- item two');
 });
 
 // ---------------------------------------------------------------
@@ -416,10 +444,30 @@ test('F1 opens help with the cheat sheet and shortcuts; Esc closes it', async ({
   await expect(page.locator('#helpOverlay')).toBeHidden();
 });
 
-test('F5 and Ctrl+R are suppressed so the document survives', async ({ page }) => {
+test('F5, Ctrl+R and Ctrl+Shift+R are suppressed so the document survives', async ({ page }) => {
   await boot(page);
   await setEditor(page, 'do not lose me');
   await page.keyboard.press('F5');
   await page.keyboard.press('Control+r');
+  await page.keyboard.press('Control+Shift+r');
   expect(await editorValue(page)).toBe('do not lose me');
+});
+
+test('AltGr combos (Ctrl+Alt on Windows) never trigger heading shortcuts', async ({ page }) => {
+  await boot(page);
+  await setEditor(page, 'plain text', 5, 5);
+  // AltGr+3 on an AZERTY layout arrives as ctrl+alt+Digit3 with AltGraph set.
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', {
+      key: '#', code: 'Digit3', ctrlKey: true, altKey: true,
+      modifierAltGraph: true, bubbles: true, cancelable: true,
+    }));
+  });
+  expect(await editorValue(page)).toBe('plain text'); // no '### ' prepended
+});
+
+test('an unreadable launch file falls back to edit view, not a blank read view', async ({ page }) => {
+  await boot(page, { launchFile: 'C:\\gone\\missing.md', files: {} });
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
+  await expect(page.locator('#toast')).toContainText('Could not open');
 });

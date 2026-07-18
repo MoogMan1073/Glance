@@ -29,6 +29,8 @@ jobs:
   build-windows:
     name: Windows installer (NSIS)
     runs-on: windows-latest
+    permissions:
+      contents: write # let the release step create/update releases
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

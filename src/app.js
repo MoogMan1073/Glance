@@ -207,10 +207,27 @@
 
   function transformSelectedLines(fn) {
     const { start, end } = selectedLineRange();
+    const selStart = editor.selectionStart;
+    const collapsed = selStart === editor.selectionEnd;
     const block = editor.value.slice(start, end);
-    const newBlock = fn(block.split('\n')).join('\n');
+    const lines = block.split('\n');
+    const newLines = fn(lines.slice());
+    const newBlock = newLines.join('\n');
     if (newBlock === block) return;
-    replaceRange(start, end, newBlock, start, start + newBlock.length);
+    if (!collapsed) {
+      replaceRange(start, end, newBlock, start, start + newBlock.length);
+      return;
+    }
+    // A collapsed caret must stay collapsed — leaving the block selected
+    // would make the next keystroke replace the whole line. Keep the caret
+    // on its line, shifted by that line's length change.
+    const beforeCaret = block.slice(0, selStart - start);
+    const lineIdx = beforeCaret.split('\n').length - 1;
+    const offsetInLine = selStart - start - (beforeCaret.lastIndexOf('\n') + 1);
+    const newLineStart = newLines.slice(0, lineIdx).join('\n').length + (lineIdx > 0 ? 1 : 0);
+    const delta = newLines[lineIdx].length - lines[lineIdx].length;
+    const newOffset = Math.max(0, Math.min(newLines[lineIdx].length, offsetInLine + delta));
+    replaceRange(start, end, newBlock, start + newLineStart + newOffset);
   }
 
   const LIST_MARKER_RE = /^(\s*)(?:[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+[.)]\s+)/;
@@ -268,6 +285,12 @@
     headingSelect.value = String(currentLineHeadingLevel());
   }
 
+  function runLength(text, idx, ch, dir) {
+    let n = 0;
+    while (idx >= 0 && idx < text.length && text[idx] === ch) { n += 1; idx += dir; }
+    return n;
+  }
+
   // Wrap or unwrap the selection with inline markers.
   function toggleInline(marker, endMarker) {
     endMarker = endMarker || marker;
@@ -276,16 +299,24 @@
     const e = editor.selectionEnd;
     const sel = value.slice(s, e);
 
+    // For the single-'*' italic marker, a neighboring '*' may really belong
+    // to a '**' bold pair (Ctrl+I on "**bold**" must not strip bold's stars).
+    // A genuine italic marker sits in an odd-length asterisk run.
+    const italicSafe = (leadRun, trailRun) =>
+      marker !== '*' || (leadRun % 2 === 1 && trailRun % 2 === 1);
+
     // Selection includes the markers: **bold** -> bold
     if (sel.length >= marker.length + endMarker.length &&
-        sel.startsWith(marker) && sel.endsWith(endMarker)) {
+        sel.startsWith(marker) && sel.endsWith(endMarker) &&
+        italicSafe(runLength(sel, 0, '*', 1), runLength(sel, sel.length - 1, '*', -1))) {
       const inner = sel.slice(marker.length, sel.length - endMarker.length);
       replaceRange(s, e, inner, s, s + inner.length);
       return;
     }
     // Markers just outside the selection: **|bold|** -> bold
     if (value.slice(s - marker.length, s) === marker &&
-        value.slice(e, e + endMarker.length) === endMarker) {
+        value.slice(e, e + endMarker.length) === endMarker &&
+        italicSafe(runLength(value, s - 1, '*', -1), runLength(value, e, '*', 1))) {
       replaceRange(s - marker.length, e + endMarker.length, sel,
         s - marker.length, s - marker.length + sel.length);
       return;
@@ -319,17 +350,22 @@
     }
   }
 
-  // Insert text that must sit on its own line(s).
+  // Insert text that must sit on its own line(s), with a blank line above —
+  // "text\n---" would turn the text into a setext heading, and tables can't
+  // interrupt a paragraph.
   function insertBlock(block, caretOffset) {
     const value = editor.value;
     const s = editor.selectionStart;
-    const atLineStart = s === 0 || value[s - 1] === '\n';
-    const before = atLineStart ? '' : '\n';
     const e = editor.selectionEnd;
+    let before = '';
+    if (s > 0) {
+      if (value[s - 1] !== '\n') before = '\n\n';
+      else if (s >= 2 && value[s - 2] !== '\n') before = '\n';
+    }
     const atLineEnd = e === value.length || value[e] === '\n';
     const after = atLineEnd ? '' : '\n';
     const text = before + block + after;
-    const caret = caretOffset === undefined ? s + text.length : s + before.length + caretOffset;
+    const caret = s + before.length + (caretOffset === undefined ? block.length : caretOffset);
     replaceRange(s, e, text, caret);
   }
 
@@ -360,25 +396,33 @@
     const value = editor.value;
     const caret = editor.selectionStart;
     const lineStart = value.lastIndexOf('\n', caret - 1) + 1;
-    const line = value.slice(lineStart, caret);
+    let lineEnd = value.indexOf('\n', caret);
+    if (lineEnd === -1) lineEnd = value.length;
+    // Judge the WHOLE line, not just the part before the caret: Enter right
+    // after "- " on "- item" must split the item, not delete the marker.
+    const line = value.slice(lineStart, lineEnd);
 
     const task = line.match(/^(\s*)([-*+])\s+\[[ xX]\]\s+(.*)$/);
     const bullet = task ? null : line.match(/^(\s*)([-*+])\s+(.*)$/);
     const ordered = task || bullet ? null : line.match(/^(\s*)(\d+)([.)])\s+(.*)$/);
     if (!task && !bullet && !ordered) return;
 
+    const m = task || bullet || ordered;
+    const content = m[m.length - 1];
+    const markerLen = line.length - content.length;
+    if (caret < lineStart + markerLen) return; // caret inside the marker: plain Enter
+
     event.preventDefault();
-    const content = task ? task[3] : bullet ? bullet[3] : ordered[4];
     if (content.trim() === '') {
       // Enter on an empty list item ends the list (Word-like).
-      replaceRange(lineStart, caret, '', lineStart);
+      replaceRange(lineStart, lineEnd, '', lineStart);
       return;
     }
     let next;
     if (task) next = `\n${task[1]}${task[2]} [ ] `;
     else if (bullet) next = `\n${bullet[1]}${bullet[2]} `;
     else next = `\n${ordered[1]}${Number(ordered[2]) + 1}${ordered[3]} `;
-    replaceRange(caret, editor.selectionEnd, next, caret + next.length);
+    replaceRange(caret, caret, next, caret + next.length);
   }
 
   function handleTab(event) {
@@ -426,8 +470,10 @@
     try {
       const content = await tauri.invoke('read_text_file', { path });
       loadContent(path, content);
+      return true;
     } catch (err) {
       showToast(String(err), true);
+      return false;
     }
   }
 
@@ -444,10 +490,13 @@
   }
 
   async function writeTo(path) {
+    // Snapshot now: keystrokes typed while the write is in flight must not
+    // be marked as saved.
+    const contents = editor.value;
     try {
-      await tauri.invoke('write_text_file', { path, contents: editor.value });
+      await tauri.invoke('write_text_file', { path, contents });
       currentPath = path;
-      savedContent = editor.value;
+      savedContent = contents;
       updateTitle();
       showToast('Saved');
       return true;
@@ -594,10 +643,13 @@
     // Keys that work everywhere.
     if (e.key === 'F1') { e.preventDefault(); toggleHelp(); return; }
     if (e.key === 'Escape' && !helpOverlay.hidden) { toggleHelp(false); return; }
-    if (e.key === 'F5' || (ctrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'r')) {
-      e.preventDefault(); return; // block webview reload — it would silently drop the document
+    if (e.key === 'F5' || (ctrl && !e.altKey && e.key.toLowerCase() === 'r')) {
+      e.preventDefault(); return; // block webview reload (incl. Ctrl+Shift+R) — it would drop the document
     }
     if (!ctrl) return;
+    // AltGr arrives as Ctrl+Alt on Windows; those combos type characters
+    // (#, @, {, … on European layouts) and must never trigger shortcuts.
+    if (e.getModifierState && e.getModifierState('AltGraph')) return;
 
     if (!e.shiftKey && !e.altKey) {
       switch (e.key.toLowerCase()) {
@@ -692,11 +744,13 @@
     if (tauri.available) {
       try { launchPath = await tauri.invoke('launch_file_path'); } catch (e) {}
     }
-    if (launchPath) {
+    const opened = launchPath ? await openPath(launchPath) : false;
+    if (opened) {
       // Opened with a file (double-click in Explorer): reading is the intent.
-      await openPath(launchPath);
       setView('read');
     } else {
+      // Blank start — or the launch file was unreadable, in which case read
+      // view would just be an empty page with the editing tools hidden.
       loadContent(null, '');
       setView('edit');
     }
