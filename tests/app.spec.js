@@ -22,6 +22,7 @@ function tauriStub(opts) {
     const T = () => window.__TAURI_TEST__;
     window.__TAURI__ = {
       core: {
+        convertFileSrc: (p) => 'stub-asset://' + p,
         invoke: async (cmd, args) => {
           T().invokes.push([cmd, args]);
           if (cmd === 'launch_file_path') return T().launchFile;
@@ -87,7 +88,7 @@ const editorValue = (page) =>
 test('blank launch starts in edit view with Untitled title', async ({ page }) => {
   await boot(page);
   await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
-  await expect(page).toHaveTitle(/Untitled - Simple Markdown Reader/);
+  await expect(page).toHaveTitle(/Untitled - Glance/);
 });
 
 test('launching with a file opens it in read (display) view', async ({ page }) => {
@@ -97,7 +98,7 @@ test('launching with a file opens it in read (display) view', async ({ page }) =
   });
   await expect(page.locator('body')).toHaveAttribute('data-view', 'read');
   await expect(page.locator('#preview h1')).toHaveText('Hello World');
-  await expect(page).toHaveTitle(/hello\.md - Simple Markdown Reader/);
+  await expect(page).toHaveTitle(/hello\.md - Glance/);
   // Editing tools are hidden in read view.
   await expect(page.locator('#btn-bold')).toBeHidden();
 });
@@ -365,7 +366,7 @@ test('save with no path goes through Save As and writes the file', async ({ page
   await boot(page, { saveResponse: 'C:\\out\\new.md' });
   await setEditor(page, '# fresh');
   await page.keyboard.press('Control+s');
-  await expect(page).toHaveTitle(/^new\.md - Simple Markdown Reader/);
+  await expect(page).toHaveTitle(/^new\.md - Glance/);
   const files = await page.evaluate(() => window.__TAURI_TEST__.files);
   expect(files['C:\\out\\new.md']).toBe('# fresh');
 });
@@ -384,7 +385,7 @@ test('open loads the picked file and clears the dirty marker', async ({ page }) 
     files: { 'C:\\docs\\a.md': '# Doc A' },
   });
   await page.keyboard.press('Control+o');
-  await expect(page).toHaveTitle(/^a\.md - Simple Markdown Reader/);
+  await expect(page).toHaveTitle(/^a\.md - Glance/);
   expect(await editorValue(page)).toBe('# Doc A');
 });
 
@@ -470,4 +471,30 @@ test('an unreadable launch file falls back to edit view, not a blank read view',
   await boot(page, { launchFile: 'C:\\gone\\missing.md', files: {} });
   await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
   await expect(page.locator('#toast')).toContainText('Could not open');
+});
+
+// ---------------------------------------------------------------
+// Local image rendering
+// ---------------------------------------------------------------
+
+test('relative and absolute image paths resolve through the asset protocol', async ({ page }) => {
+  await boot(page, {
+    launchFile: 'C:\\notes\\hello.md',
+    files: {
+      'C:\\notes\\hello.md':
+        '![rel](images/pic.png)\n\n![abs](C:\\pics\\a.png)\n\n![web](https://example.com/i.png)',
+    },
+  });
+  const imgs = page.locator('#preview img');
+  await expect(imgs).toHaveCount(3);
+  expect(await imgs.nth(0).getAttribute('src')).toBe('stub-asset://C:\\notes/images/pic.png');
+  expect(await imgs.nth(1).getAttribute('src')).toBe('stub-asset://C:\\pics\\a.png');
+  expect(await imgs.nth(2).getAttribute('src')).toBe('https://example.com/i.png');
+});
+
+test('relative image paths in an unsaved document are left alone', async ({ page }) => {
+  await boot(page);
+  await page.keyboard.press('Control+2');
+  await setEditor(page, '![rel](images/pic.png)');
+  expect(await page.locator('#preview img').getAttribute('src')).toBe('images/pic.png');
 });

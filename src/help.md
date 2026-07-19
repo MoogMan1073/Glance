@@ -1,4 +1,4 @@
-# Simple Markdown Reader
+# Glance
 
 A fast, minimal reader and editor for Markdown files.
 
@@ -269,6 +269,10 @@ X^2^
 
 ## Notes
 
+- Images referenced by documents render in the preview: web URLs, absolute
+  paths (`C:\photos\pic.png`), and paths relative to the open file
+  (`![diagram](images/diagram.png)`). Relative paths need the file to be
+  saved/opened from disk so there is a folder to resolve against.
 - Raw HTML inside documents is shown as text, not executed — documents from
   any source are safe to open.
 - Web links in the preview open in your default browser.

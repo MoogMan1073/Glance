@@ -1,5 +1,5 @@
 // ============================================================
-// Simple Markdown Reader — application logic
+// Glance — application logic
 // Plain JS, no build step. Talks to Tauri through the small
 // facade below so the UI also runs (and is tested) in a browser.
 // ============================================================
@@ -17,6 +17,7 @@
     openDialog: (opts) => T ? T.dialog.open(opts) : Promise.resolve(null),
     saveDialog: (opts) => T ? T.dialog.save(opts) : Promise.resolve(null),
     openUrl: (url) => T ? T.opener.openUrl(url) : Promise.resolve(window.open(url, '_blank')),
+    convertFileSrc: (T && T.core && T.core.convertFileSrc) ? (p) => T.core.convertFileSrc(p) : null,
     setTitle: (title) => { if (T) T.window.getCurrentWindow().setTitle(title).catch(() => {}); },
     currentWindow: () => T ? T.window.getCurrentWindow() : null,
     currentWebview: () => (T && T.webview) ? T.webview.getCurrentWebview() : null,
@@ -74,7 +75,33 @@
     const emoji = window.markdownitEmoji;
     use(emoji && (emoji.full || emoji.default || emoji));
     use(window.markdownItAttrs, { allowedAttributes: ['id', 'class'] });
+
+    // Local images: serve relative / absolute file paths through Tauri's
+    // asset protocol so photos referenced by documents actually render.
+    const defaultImage = md.renderer.rules.image ||
+      ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
+    md.renderer.rules.image = (tokens, idx, options, env, self) => {
+      const token = tokens[idx];
+      const resolved = resolveLocalImage(token.attrGet('src') || '');
+      if (resolved) token.attrSet('src', resolved);
+      return defaultImage(tokens, idx, options, env, self);
+    };
     return md;
+  }
+
+  // Map a markdown image src to an asset-protocol URL when it points at a
+  // file on disk. Relative paths resolve against the open file's folder.
+  function resolveLocalImage(src) {
+    if (!tauri.convertFileSrc) return null;
+    if (/^(https?:|data:|asset:|blob:|#)/i.test(src)) return null;
+    let path;
+    try { path = decodeURIComponent(src); } catch (e) { path = src; }
+    const isAbsolute = /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
+    if (!isAbsolute) {
+      if (!currentPath || !/[\\/]/.test(currentPath)) return null; // unsaved doc: no base folder
+      path = currentPath.replace(/[\\/][^\\/]*$/, '') + '/' + path;
+    }
+    try { return tauri.convertFileSrc(path); } catch (e) { return null; }
   }
 
   const md = buildRenderer();
@@ -110,7 +137,7 @@
   }
 
   function updateTitle() {
-    const title = `${isDirty() ? '● ' : ''}${baseName(currentPath)} - Simple Markdown Reader`;
+    const title = `${isDirty() ? '● ' : ''}${baseName(currentPath)} - Glance`;
     document.title = title;
     tauri.setTitle(title);
   }
@@ -450,7 +477,7 @@
 
   async function confirmDiscard(question) {
     if (!isDirty()) return true;
-    return tauri.ask(question, { title: 'Simple Markdown Reader', kind: 'warning' });
+    return tauri.ask(question, { title: 'Glance', kind: 'warning' });
   }
 
   function loadContent(path, content) {
@@ -718,7 +745,7 @@
       if (!isDirty()) return;
       const close = await tauri.ask(
         'You have unsaved changes. Close without saving?',
-        { title: 'Simple Markdown Reader', kind: 'warning' }
+        { title: 'Glance', kind: 'warning' }
       );
       if (!close) event.preventDefault();
     });

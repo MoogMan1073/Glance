@@ -1,8 +1,8 @@
 {
-  "name": "simple-markdown-reader",
-  "version": "0.0.2",
+  "name": "glance",
+  "version": "0.0.3",
   "private": true,
-  "description": "Fast, minimal Markdown reader and editor",
+  "description": "Glance — fast, minimal Markdown reader and editor",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",

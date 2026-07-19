@@ -1,4 +1,4 @@
-# Simple Markdown Reader
+# Glance
 
 A simple, **quick-to-launch** Windows desktop app for reading and editing
 Markdown files. Built for the gap between "too small for an Obsidian vault"
@@ -19,6 +19,8 @@ reading it in well under a second.
 - **Full cheat-sheet rendering** — tables, fenced code blocks with syntax
   coloring, footnotes, heading IDs, definition lists, strikethrough, task
   lists, emoji (`:joy:`), ==highlight==, subscript, superscript.
+- **Images render in the preview** — web URLs, absolute file paths, and
+  paths relative to the open document (`![diagram](images/diagram.png)`).
 - **Light / dark mode** — follows your Windows setting by default; the theme
   button cycles System → Light → Dark.
 - **Standard Windows behavior** — Save / Save As / Open / New, native file
@@ -38,17 +40,17 @@ launch. The UI itself is plain HTML/CSS/JS with no framework.
 
 ## Installing
 
-1. Download the latest `*-setup.exe` from
-   [Releases](../../releases) (or grab the `SimpleMarkdownReader-installer`
+1. Download the latest `Glance_*-setup.exe` from
+   [Releases](../../releases) (or grab the `Glance-installer`
    artifact from the latest [Actions](../../actions) run).
 2. Run it. The installer (NSIS — same family of tooling as Inno Setup)
    installs per-user, no admin rights needed, and registers the app for
    `.md` and `.markdown` files.
 3. **Making it the default:** Windows 10+ does not let installers silently
    take over a file type you've already assigned to another app. If `.md`
-   files don't open with Simple Markdown Reader right away, right-click any
-   `.md` file → **Open with → Choose another app → Simple Markdown Reader →
-   Always**. You only do this once.
+   files don't open with Glance right away, right-click any `.md` file →
+   **Open with → Choose another app → Glance → Always**. You only do this
+   once.
 
 > **SmartScreen note:** the installer is not code-signed, so the first run
 > may show "Windows protected your PC" — click *More info → Run anyway*.
