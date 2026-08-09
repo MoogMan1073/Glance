@@ -34,6 +34,11 @@
     "category": "Productivity",
     "shortDescription": "Fast, minimal Markdown reader and editor",
     "longDescription": "A simple, quick-to-launch desktop application for reading and editing Markdown files, with edit, display, and side-by-side views.",
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md",
+      "../licenses": "licenses"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

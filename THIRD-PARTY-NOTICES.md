@@ -4,89 +4,125 @@ Glance itself is released under the [BSD Zero Clause License](LICENSE), which
 asks nothing of you — no attribution, no fee.
 
 The libraries Glance bundles are a separate matter. They are all permissive
-(nothing copyleft in the usual sense, nothing that restricts commercial use),
-but most of them do ask that their copyright notice travel with copies of the
-software. This file carries those notices so that redistributing Glance —
-source or a compiled installer — satisfies them.
+(nothing that restricts commercial use, nothing that forces you to open your
+own code), but most of them do ask that their copyright notice travel with
+copies of the software. This file carries those notices so that
+redistributing Glance — as source or as a compiled installer — satisfies
+them.
 
 If you reuse Glance's own code without these libraries, none of this applies.
+
+Keep this file, and the `licenses/` directory it references, alongside
+anything you ship.
 
 ---
 
 ## Bundled JavaScript and CSS
 
-Shipped verbatim in `src/vendor/` and inside the installer.
+`tauri.conf.json` sets `frontendDist` to `../src`, so everything in
+`src/vendor/` is compiled into the installer.
 
-| Library | Version | License |
-| ------- | ------- | ------- |
-| [markdown-it](https://github.com/markdown-it/markdown-it) | 14.3.0 | MIT |
-| [markdown-it-footnote](https://github.com/markdown-it/markdown-it-footnote) | 4.0.0 | MIT |
-| [markdown-it-deflist](https://github.com/markdown-it/markdown-it-deflist) | 3.0.1 | MIT |
-| [markdown-it-mark](https://github.com/markdown-it/markdown-it-mark) | 4.0.0 | MIT |
-| [markdown-it-sub](https://github.com/markdown-it/markdown-it-sub) | 2.0.0 | MIT |
-| [markdown-it-sup](https://github.com/markdown-it/markdown-it-sup) | 2.0.0 | MIT |
-| [markdown-it-emoji](https://github.com/markdown-it/markdown-it-emoji) | 3.0.0 | MIT |
-| [markdown-it-attrs](https://github.com/arve0/markdown-it-attrs) | 4.x | MIT |
-| [markdown-it-task-lists](https://github.com/revin/markdown-it-task-lists) | 2.1.0 | ISC |
-| [highlight.js](https://github.com/highlightjs/highlight.js) (+ github / github-dark themes) | 11.11.1 | BSD-3-Clause |
+| Library | Version | License | Copyright |
+| ------- | ------- | ------- | --------- |
+| [markdown-it](https://github.com/markdown-it/markdown-it) | 14.3.0 | MIT | Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin |
+| [markdown-it-footnote](https://github.com/markdown-it/markdown-it-footnote) | 4.0.0 | MIT | Copyright (c) 2014-2015 Vitaly Puzrin, Alex Kocharin |
+| [markdown-it-deflist](https://github.com/markdown-it/markdown-it-deflist) | 3.0.1 | MIT | Copyright (c) 2014-2015 Vitaly Puzrin, Alex Kocharin |
+| [markdown-it-mark](https://github.com/markdown-it/markdown-it-mark) | 4.0.0 | MIT | Copyright (c) 2014-2015 Vitaly Puzrin, Alex Kocharin |
+| [markdown-it-sub](https://github.com/markdown-it/markdown-it-sub) | 2.0.0 | MIT | Copyright (c) 2014-2015 Vitaly Puzrin, Alex Kocharin |
+| [markdown-it-sup](https://github.com/markdown-it/markdown-it-sup) | 2.0.0 | MIT | Copyright (c) 2014-2015 Vitaly Puzrin, Alex Kocharin |
+| [markdown-it-emoji](https://github.com/markdown-it/markdown-it-emoji) | 3.0.0 | MIT | Copyright (c) 2014 Vitaly Puzrin |
+| [markdown-it-attrs](https://github.com/arve0/markdown-it-attrs) | 4.5.0 | MIT | Copyright (c) 2016 Arve Seljebu |
+| [markdown-it-task-lists](https://github.com/revin/markdown-it-task-lists) | 2.1.1 | **ISC** | Copyright (c) 2016 Revin Guillen |
+| [highlight.js](https://github.com/highlightjs/highlight.js) | 11.11.1 | **BSD-3-Clause** | see note below |
+| highlight.js `github` / `github-dark` themes | 11.11.1 | BSD-3-Clause | ship as part of highlight.js |
 
-Copyright holders:
+Two entries above are deliberately bolded, because they are the ones a quick
+skim gets wrong:
 
-- **markdown-it and the `markdown-it-*` plugins by that project** —
-  Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin.
-- **markdown-it-attrs** — Copyright (c) 2016 Arve Seljebu.
-- **markdown-it-task-lists** — Copyright (c) 2016 Revin Guillen.
-- **highlight.js** — the distributed bundle carries the banner
-  `(c) 2006-2024 Josh Goebel <hello@joshgoebel.com> and other contributors`;
-  the upstream `LICENSE` file records Copyright (c) 2006 Ivan Sagalaev.
-  The `github` and `github-dark` themes ship as part of highlight.js.
+- **markdown-it-task-lists is ISC, not MIT**, despite sitting among eight
+  MIT-licensed siblings with near-identical filenames. (The npm package is
+  2.1.1; its in-file banner reads 2.1.0.)
+- **highlight.js has two attributions.** The distributed bundle carries the
+  banner `(c) 2006-2024 Josh Goebel <hello@joshgoebel.com> and other
+  contributors`, while the upstream `LICENSE` file records
+  `Copyright (c) 2006, Ivan Sagalaev`. Both are reproduced here.
 
-The full text of the MIT, ISC, and BSD-3-Clause licenses appears at the bottom
-of this file.
+### Libraries compiled *inside* `markdown-it.min.js`
+
+These have no separate file in `src/vendor/` and are invisible unless you
+decompile the bundle — but they ship in the installer just the same, and one
+of them introduces a license that appears nowhere else in the project.
+
+| Library | License | Copyright |
+| ------- | ------- | --------- |
+| [entities](https://github.com/fb55/entities) | **BSD-2-Clause** | Copyright (c) Felix Böhm. All rights reserved. |
+| [linkify-it](https://github.com/markdown-it/linkify-it) | MIT | Copyright (c) 2015 Vitaly Puzrin |
+| [mdurl](https://github.com/markdown-it/mdurl) | MIT | Copyright (c) 2015 Vitaly Puzrin, Alex Kocharin |
+| [uc.micro](https://github.com/markdown-it/uc.micro) | MIT | Copyright Mathias Bynens |
+| [punycode.js](https://github.com/mathiasbynens/punycode.js) | MIT | Copyright Mathias Bynens |
+
+`entities` is verifiable from outside: rendering `&nleqslant;` produces `⩽̸`,
+which requires its full named-entity table.
+
+(`argparse`, a declared markdown-it dependency under Python-2.0, is used only
+by its command-line tooling and is **not** in the browser bundle.)
 
 ## Rust dependencies
 
-Compiled into the Glance executable. The dependency graph resolves to 473
-packages; every one declares a license, and there is no GPL/AGPL obligation
-anywhere in the tree. The licenses that appear:
+Compiled into `glance.exe`. Filtered to the shipped target
+(`x86_64-pc-windows-msvc`) and to crates that actually link into the binary —
+roughly 149 crate-versions, out of 473 that appear in `Cargo.lock` across all
+platforms.
 
 | License | Notes |
 | ------- | ----- |
 | MIT, Apache-2.0, and dual `MIT OR Apache-2.0` | The overwhelming majority. |
-| BSD-3-Clause | `brotli`, `alloc-no-stdlib`, `alloc-stdlib`, and others offering it as one option. |
-| ISC, Zlib, 0BSD, Unlicense | Permissive; several offered as one option in a dual license. |
-| Unicode-3.0 | The `icu_*` / `zerovec` family used for Unicode handling. |
-| MPL-2.0 | `cssparser`, `cssparser-macros`, `selectors`, `dtoa-short`, `option-ext`. |
+| **Apache-2.0 only** | `tao` (the windowing layer) offers **no MIT alternative**, so a verbatim Apache-2.0 copy is mandatory: [`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt). |
+| **Unicode-3.0** | The ICU4X family (`icu_*`, `zerovec`, `tinystr`, …). Requires its notice in copies and documentation: [`licenses/Unicode-3.0.txt`](licenses/Unicode-3.0.txt). Copyright © 2020-2024 Unicode, Inc. |
+| BSD-3-Clause | `brotli`, `brotli-decompressor`, `alloc-no-stdlib`, `alloc-stdlib`. |
+| **MPL-2.0** | `option-ext` (via `tauri → dirs → dirs-sys`). |
+| ISC, Zlib, 0BSD, Unlicense | Permissive; mostly offered as one option in a dual license. |
 
-Two of these deserve a sentence:
+Points that matter:
 
-- **MPL-2.0** is file-level copyleft. Glance uses these crates unmodified as
-  libraries, which MPL-2.0 explicitly permits inside a larger work under any
-  license. The obligation is that the source of those specific files stays
-  available — it is, unmodified, on crates.io. If you were to *modify* one of
-  those crates, you would need to publish your changes to it (only to it).
-- **`r-efi`** is offered as `MIT OR Apache-2.0 OR LGPL-2.1-or-later`. Taking it
-  under MIT or Apache-2.0 — as this project does — carries no LGPL obligation.
+- **`brotli` is `BSD-3-Clause AND MIT`, and `dpi` is `Apache-2.0 AND MIT` —
+  AND, not OR.** Both licenses must be satisfied for those two crates; you
+  cannot elect one.
+- **MPL-2.0 (`option-ext`) is file-level copyleft and it *is* in the shipped
+  binary.** This does not affect your licensing: MPL-2.0 §3.3 explicitly
+  permits distributing a Larger Work under any other terms, including 0BSD.
+  The obligation is only that the source of those specific files remains
+  available — it is, unmodified, on crates.io. If you *modified* that crate,
+  you would owe your changes to it, and nothing else.
+- **`r-efi`** offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later`. This project
+  takes it under MIT, so there is no LGPL obligation. Dependency scanners
+  flag the string; it is a non-issue.
+- Four MPL-2.0 crates (`cssparser`, `cssparser-macros`, `selectors`,
+  `dtoa-short`) appear in `Cargo.lock` but are **not** in the Windows binary —
+  they belong to the Linux WebKit path. A naive `cargo metadata` scan
+  over-reports them.
+- No crate is missing a license field, and there is no GPL or AGPL anywhere
+  in the tree.
 
-Tauri, the application framework, is dual-licensed MIT / Apache-2.0.
-
-To regenerate this inventory:
+To regenerate this inventory mechanically:
 
 ```bash
-cd src-tauri && cargo metadata --format-version 1 | \
-  python -c "import json,sys,collections; d=json.load(sys.stdin); \
-  print(collections.Counter(p.get('license') for p in d['packages']))"
+cargo install cargo-about
+cd src-tauri && cargo about generate --target x86_64-pc-windows-msvc
 ```
 
 ## Runtime
 
-Glance renders through **WebView2**, which is part of Windows and is not
-bundled or redistributed by this project. The installer only downloads
-Microsoft's official bootstrapper if the runtime is missing.
+Glance renders through **WebView2**, which is a component of Windows and is
+neither bundled nor redistributed by this project. The installer only fetches
+Microsoft's official bootstrapper when the runtime is absent.
 
 ---
 
 ## License texts
+
+The long ones live in [`licenses/`](licenses): [Apache-2.0](licenses/Apache-2.0.txt)
+and [Unicode-3.0](licenses/Unicode-3.0.txt). The short ones follow.
 
 ### MIT License
 
@@ -126,6 +162,31 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
 
+### BSD 2-Clause License
+
+```
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 ### BSD 3-Clause License
 
 ```
@@ -155,5 +216,11 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-Full license texts for the Rust dependencies are distributed with their source
-on [crates.io](https://crates.io) and in the local Cargo registry cache.
+Note on BSD-3-Clause clause 3: it is a conduct restriction rather than a
+reproduction one, and it survives regardless of Glance's own license — do not
+use the names of highlight.js or its contributors to endorse or promote
+derived products without permission.
+
+Full license texts for every Rust crate ship with their source on
+[crates.io](https://crates.io) and are present in the local Cargo registry
+cache after a build.
