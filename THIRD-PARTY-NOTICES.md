@@ -31,8 +31,8 @@ anything you ship.
 | [markdown-it-sub](https://github.com/markdown-it/markdown-it-sub) | 2.0.0 | MIT | Copyright (c) 2014-2015 Vitaly Puzrin, Alex Kocharin |
 | [markdown-it-sup](https://github.com/markdown-it/markdown-it-sup) | 2.0.0 | MIT | Copyright (c) 2014-2015 Vitaly Puzrin, Alex Kocharin |
 | [markdown-it-emoji](https://github.com/markdown-it/markdown-it-emoji) | 3.0.0 | MIT | Copyright (c) 2014 Vitaly Puzrin |
-| [markdown-it-attrs](https://github.com/arve0/markdown-it-attrs) | 4.5.0 | MIT | Copyright (c) 2016 Arve Seljebu |
-| [markdown-it-task-lists](https://github.com/revin/markdown-it-task-lists) | 2.1.1 | **ISC** | Copyright (c) 2016 Revin Guillen |
+| [markdown-it-attrs](https://github.com/arve0/markdown-it-attrs) | 4.5.0 | MIT | Copyright (c) Arve Seljebu &lt;arve.seljebu@gmail.com&gt; (arve0.github.io) |
+| [markdown-it-task-lists](https://github.com/revin/markdown-it-task-lists) | 2.1.1 | **ISC** | Copyright (c) 2016, Revin Guillen |
 | [highlight.js](https://github.com/highlightjs/highlight.js) | 11.11.1 | **BSD-3-Clause** | see note below |
 | highlight.js `github` / `github-dark` themes | 11.11.1 | BSD-3-Clause | ship as part of highlight.js |
 
@@ -79,9 +79,9 @@ platforms.
 | MIT, Apache-2.0, and dual `MIT OR Apache-2.0` | The overwhelming majority. |
 | **Apache-2.0 only** | `tao` (the windowing layer) offers **no MIT alternative**, so a verbatim Apache-2.0 copy is mandatory: [`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt). |
 | **Unicode-3.0** | The ICU4X family (`icu_*`, `zerovec`, `tinystr`, …). Requires its notice in copies and documentation: [`licenses/Unicode-3.0.txt`](licenses/Unicode-3.0.txt). Copyright © 2020-2024 Unicode, Inc. |
-| BSD-3-Clause | `brotli`, `brotli-decompressor`, `alloc-no-stdlib`, `alloc-stdlib`. |
+| **BSD-3-Clause** | `brotli`, `brotli-decompressor`, `alloc-no-stdlib`, `alloc-stdlib` — all `Copyright (c) 2016 Dropbox, Inc.` `brotli`'s MIT half is `Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.` |
 | **MPL-2.0** | `option-ext` (via `tauri → dirs → dirs-sys`). |
-| ISC, Zlib, 0BSD, Unlicense | Permissive; mostly offered as one option in a dual license. |
+| Zlib, 0BSD, Unlicense | Appear only as alternatives inside dual licenses (e.g. `Unlicense OR MIT`); this project elects MIT wherever it is offered. |
 
 Points that matter:
 
@@ -91,12 +91,16 @@ Points that matter:
 - **MPL-2.0 (`option-ext`) is file-level copyleft and it *is* in the shipped
   binary.** This does not affect your licensing: MPL-2.0 §3.3 explicitly
   permits distributing a Larger Work under any other terms, including 0BSD.
-  The obligation is only that the source of those specific files remains
-  available — it is, unmodified, on crates.io. If you *modified* that crate,
-  you would owe your changes to it, and nothing else.
-- **`r-efi`** offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later`. This project
-  takes it under MIT, so there is no LGPL obligation. Dependency scanners
-  flag the string; it is a non-issue.
+  §3.2 does require telling recipients of the executable how to obtain that
+  source, so: **the unmodified source of `option-ext` is at
+  <https://crates.io/crates/option-ext> and
+  <https://github.com/soc/option-ext>.** If you *modified* that crate, you
+  would owe your changes to it, and nothing else.
+- **`r-efi`** carries the tree's only LGPL string
+  (`MIT OR Apache-2.0 OR LGPL-2.1-or-later`) and dependency scanners flag it.
+  It is reached only through wasm/UEFI targets and is **not in the Windows
+  dependency graph at all**; where it is used, MIT applies. Either way there
+  is no LGPL obligation.
 - Four MPL-2.0 crates (`cssparser`, `cssparser-macros`, `selectors`,
   `dtoa-short`) appear in `Cargo.lock` but are **not** in the Windows binary —
   they belong to the Linux WebKit path. A naive `cargo metadata` scan
