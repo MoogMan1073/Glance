@@ -1,8 +1,13 @@
 {
-  "name": "simple-markdown-reader",
-  "version": "1.0.0",
+  "name": "glance",
+  "version": "0.0.3",
   "private": true,
-  "description": "Fast, minimal Markdown reader and editor",
+  "description": "Glance — fast, minimal Markdown reader and editor",
+  "license": "0BSD",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MoogMan1073/Glance.git"
+  },
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",

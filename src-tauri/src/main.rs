@@ -39,5 +39,5 @@ fn main() {
             launch_file_path
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Simple Markdown Reader");
+        .expect("error while running Glance");
 }

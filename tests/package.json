@@ -1,7 +1,8 @@
 {
-  "name": "simple-markdown-reader-tests",
+  "name": "glance-tests",
   "version": "1.0.0",
   "private": true,
+  "license": "0BSD",
   "scripts": {
     "test": "playwright test"
   },
