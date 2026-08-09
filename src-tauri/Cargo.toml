@@ -3,6 +3,8 @@ name = "glance"
 version = "0.0.3"
 description = "Glance — fast, minimal Markdown reader and editor"
 authors = ["MoogMan1073"]
+license = "0BSD"
+repository = "https://github.com/MoogMan1073/Glance"
 edition = "2021"
 rust-version = "1.77"
 

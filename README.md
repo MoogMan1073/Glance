@@ -105,3 +105,15 @@ docs/                 The Markdown cheat sheet the help is based on
   toolbar and hotkeys do the Markdown for you.
 - Preferences (theme) persist between sessions; everything else is
   deliberately stateless.
+
+## License
+
+[0BSD](LICENSE) — the BSD Zero Clause License. Take it and run: use, copy,
+modify, distribute, or sell it, commercially or not, with **no attribution
+required** and no fee. You don't need to credit anyone or ask permission.
+
+The bundled third-party libraries (markdown-it, highlight.js, Tauri and its
+Rust dependencies) keep their own permissive licenses — see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Those licenses do ask that
+their copyright notices travel with redistributions, so keep that file
+alongside the code if you ship a build.
