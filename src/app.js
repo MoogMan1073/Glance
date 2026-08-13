@@ -18,6 +18,7 @@
     saveDialog: (opts) => T ? T.dialog.save(opts) : Promise.resolve(null),
     openUrl: (url) => T ? T.opener.openUrl(url) : Promise.resolve(window.open(url, '_blank')),
     convertFileSrc: (T && T.core && T.core.convertFileSrc) ? (p) => T.core.convertFileSrc(p) : null,
+    listen: (evt, handler) => (T && T.event) ? T.event.listen(evt, handler) : null,
     setTitle: (title) => { if (T) T.window.getCurrentWindow().setTitle(title).catch(() => {}); },
     currentWindow: () => T ? T.window.getCurrentWindow() : null,
     currentWebview: () => (T && T.webview) ? T.webview.getCurrentWebview() : null,
@@ -35,20 +36,53 @@
   const editor = document.getElementById('editor');
   const preview = document.getElementById('preview');
   const previewPane = document.getElementById('previewPane');
+  const tabbar = document.getElementById('tabbar');
   const headingSelect = document.getElementById('sel-heading');
   const themeBtn = document.getElementById('btn-theme');
   const helpOverlay = document.getElementById('helpOverlay');
   const helpContent = document.getElementById('helpContent');
   const toast = document.getElementById('toast');
 
-  // ---------------- State ----------------
+  // ---------------- Documents ----------------
+  // Every open file is a doc. The editor and preview show whichever one is
+  // active; the rest keep their text, caret, and scroll position in memory so
+  // switching back lands exactly where you left off.
 
-  let currentPath = null;      // absolute path of the open file, or null for a new doc
-  let savedContent = '';       // editor content at last load/save
-  let previewStale = true;     // preview needs re-render
+  let docs = [];
+  let activeId = null;
+  let seq = 0;
   let helpLoaded = false;
 
-  const isDirty = () => editor.value !== savedContent;
+  function makeDoc(path, content) {
+    return {
+      id: ++seq,
+      path: path || null,
+      content: content || '',
+      savedContent: content || '',
+      selStart: 0,
+      selEnd: 0,
+      editorScroll: 0,
+      previewScroll: 0,
+      html: null, // cached render; null means stale
+    };
+  }
+
+  const activeDoc = () => docs.find((d) => d.id === activeId) || null;
+  const docDirty = (d) => !!d && d.content !== d.savedContent;
+  const isDirty = () => docDirty(activeDoc());
+  const findByPath = (path) => docs.find((d) => d.path === path) || null;
+
+  // Pull the live editor state back into the active doc before anything reads
+  // or replaces it — the textarea is the source of truth while a doc is shown.
+  function captureActive() {
+    const d = activeDoc();
+    if (!d) return;
+    d.content = editor.value;
+    d.selStart = editor.selectionStart;
+    d.selEnd = editor.selectionEnd;
+    d.editorScroll = editor.scrollTop;
+    d.previewScroll = previewPane.scrollTop;
+  }
 
   // ---------------- Markdown renderer ----------------
 
@@ -78,11 +112,13 @@
 
     // Local images: serve relative / absolute file paths through Tauri's
     // asset protocol so photos referenced by documents actually render.
+    // The base path travels in `env` rather than a shared variable, so each
+    // tab resolves against its own folder.
     const defaultImage = md.renderer.rules.image ||
       ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
     md.renderer.rules.image = (tokens, idx, options, env, self) => {
       const token = tokens[idx];
-      const resolved = resolveLocalImage(token.attrGet('src') || '');
+      const resolved = resolveLocalImage(token.attrGet('src') || '', env && env.basePath);
       if (resolved) token.attrSet('src', resolved);
       return defaultImage(tokens, idx, options, env, self);
     };
@@ -91,32 +127,39 @@
 
   // Map a markdown image src to an asset-protocol URL when it points at a
   // file on disk. Relative paths resolve against the open file's folder.
-  function resolveLocalImage(src) {
+  function resolveLocalImage(src, basePath) {
     if (!tauri.convertFileSrc) return null;
     if (/^(https?:|data:|asset:|blob:|#)/i.test(src)) return null;
     let path;
     try { path = decodeURIComponent(src); } catch (e) { path = src; }
     const isAbsolute = /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
     if (!isAbsolute) {
-      if (!currentPath || !/[\\/]/.test(currentPath)) return null; // unsaved doc: no base folder
-      path = currentPath.replace(/[\\/][^\\/]*$/, '') + '/' + path;
+      if (!basePath || !/[\\/]/.test(basePath)) return null; // unsaved doc: no base folder
+      path = basePath.replace(/[\\/][^\\/]*$/, '') + '/' + path;
     }
     try { return tauri.convertFileSrc(path); } catch (e) { return null; }
   }
 
   const md = buildRenderer();
 
-  function renderPreview() {
-    preview.innerHTML = md.render(editor.value);
-    previewStale = false;
+  function renderPreview(restoreScroll) {
+    const d = activeDoc();
+    if (!d) return;
+    if (d.html === null) d.html = md.render(d.content, { basePath: d.path });
+    preview.innerHTML = d.html;
+    if (restoreScroll) previewPane.scrollTop = d.previewScroll;
   }
 
   let renderTimer = null;
   function scheduleRender() {
-    previewStale = true;
+    const d = activeDoc();
+    if (d) d.html = null;
     if (document.body.dataset.view === 'edit') return; // render lazily when preview becomes visible
     clearTimeout(renderTimer);
-    renderTimer = setTimeout(() => { if (previewStale) renderPreview(); }, 120);
+    renderTimer = setTimeout(() => {
+      const cur = activeDoc();
+      if (cur && cur.html === null) renderPreview(false);
+    }, 120);
   }
 
   // ---------------- Toast ----------------
@@ -130,17 +173,158 @@
     toastTimer = setTimeout(() => { toast.hidden = true; }, isError ? 5000 : 1800);
   }
 
-  // ---------------- Title ----------------
+  // ---------------- Title & tab bar ----------------
 
   function baseName(path) {
     return path ? path.split(/[\\/]/).pop() : 'Untitled';
   }
 
   function updateTitle() {
-    const title = `${isDirty() ? '● ' : ''}${baseName(currentPath)} - Glance`;
+    const d = activeDoc();
+    const title = `${docDirty(d) ? '● ' : ''}${baseName(d && d.path)} - Glance`;
     document.title = title;
     tauri.setTitle(title);
   }
+
+  const CLOSE_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.1 3 8 6.9 11.9 3 13 4.1 9.1 8l3.9 3.9-1.1 1.1L8 9.1 4.1 13 3 11.9 6.9 8 3 4.1 4.1 3z"/></svg>';
+
+  function renderTabs() {
+    document.body.dataset.tabs = docs.length > 1 ? 'many' : 'single';
+    tabbar.textContent = '';
+    for (const d of docs) {
+      const tab = document.createElement('div');
+      tab.className = 'tab';
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', String(d.id === activeId));
+      tab.dataset.id = String(d.id);
+      tab.dataset.dirty = String(docDirty(d));
+      tab.title = d.path || 'Untitled';
+
+      const name = document.createElement('span');
+      name.className = 'tab-name';
+      name.textContent = baseName(d.path);
+      tab.appendChild(name);
+
+      const close = document.createElement('button');
+      close.className = 'tab-close';
+      close.innerHTML = CLOSE_SVG;
+      close.title = 'Close (Ctrl+W)';
+      close.setAttribute('aria-label', `Close ${baseName(d.path)}`);
+      tab.appendChild(close);
+
+      tabbar.appendChild(tab);
+      if (d.id === activeId && docs.length > 1) {
+        // Keep the active tab reachable when the strip overflows.
+        requestAnimationFrame(() => tab.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+      }
+    }
+  }
+
+  // ---------------- Tab operations ----------------
+
+  function activate(id, focusEditor) {
+    if (id === activeId) return;
+    captureActive();
+    const d = docs.find((x) => x.id === id);
+    if (!d) return;
+    activeId = id;
+    editor.value = d.content;
+    editor.setSelectionRange(d.selStart, d.selEnd);
+    editor.scrollTop = d.editorScroll;
+    if (document.body.dataset.view !== 'edit') renderPreview(true);
+    renderTabs();
+    updateTitle();
+    updateHeadingSelect();
+    if (focusEditor !== false && document.body.dataset.view !== 'read') editor.focus();
+  }
+
+  // A brand-new empty doc is a placeholder, not work — opening a file reuses
+  // it instead of leaving a stray "Untitled" tab behind, the way browsers do.
+  function isDisposable(d) {
+    return !!d && !d.path && d.content === '' && d.savedContent === '';
+  }
+
+  function addDoc(path, content, options) {
+    const opts = options || {};
+    const existing = path ? findByPath(path) : null;
+    if (existing) {
+      activate(existing.id, opts.focusEditor);
+      return existing;
+    }
+    captureActive();
+    const doc = makeDoc(path, content);
+    const cur = activeDoc();
+    if (opts.replaceDisposable !== false && isDisposable(cur)) {
+      docs.splice(docs.indexOf(cur), 1);
+    }
+    docs.push(doc);
+    activeId = doc.id;
+    editor.value = doc.content;
+    editor.setSelectionRange(0, 0);
+    editor.scrollTop = 0;
+    previewPane.scrollTop = 0;
+    if (document.body.dataset.view !== 'edit') renderPreview(false);
+    renderTabs();
+    updateTitle();
+    updateHeadingSelect();
+    if (opts.focusEditor !== false && document.body.dataset.view !== 'read') editor.focus();
+    return doc;
+  }
+
+  async function closeDoc(id) {
+    const d = docs.find((x) => x.id === id);
+    if (!d) return false;
+    if (d.id === activeId) captureActive();
+    if (docDirty(d)) {
+      const ok = await tauri.ask(
+        `${baseName(d.path)} has unsaved changes. Close it anyway?`,
+        { title: 'Glance', kind: 'warning' }
+      );
+      if (!ok) return false;
+    }
+    const idx = docs.indexOf(d);
+    docs.splice(idx, 1);
+
+    if (!docs.length) {
+      // Last tab closed: nothing left to show, so the window goes with it.
+      const win = tauri.currentWindow();
+      if (win) win.destroy ? win.destroy() : win.close();
+      else { addDoc(null, ''); }
+      return true;
+    }
+    if (d.id === activeId) {
+      const next = docs[Math.min(idx, docs.length - 1)];
+      activeId = null;         // force activate() past its no-op guard
+      activate(next.id);
+    } else {
+      renderTabs();
+    }
+    return true;
+  }
+
+  function cycleTab(delta) {
+    if (docs.length < 2) return;
+    const i = docs.findIndex((d) => d.id === activeId);
+    const next = docs[(i + delta + docs.length) % docs.length];
+    activate(next.id);
+  }
+
+  tabbar.addEventListener('click', (e) => {
+    const tab = e.target.closest('.tab');
+    if (!tab) return;
+    const id = Number(tab.dataset.id);
+    if (e.target.closest('.tab-close')) closeDoc(id);
+    else activate(id);
+  });
+
+  // Middle-click closes, as in every browser.
+  tabbar.addEventListener('auxclick', (e) => {
+    if (e.button !== 1) return;
+    const tab = e.target.closest('.tab');
+    if (!tab) return;
+    e.preventDefault();
+    closeDoc(Number(tab.dataset.id));
+  });
 
   // ---------------- Views ----------------
 
@@ -148,11 +332,13 @@
 
   function setView(view) {
     if (!VIEWS.includes(view)) return;
+    const prev = document.body.dataset.view;
     document.body.dataset.view = view;
     for (const v of VIEWS) {
       document.getElementById('btn-view-' + v).classList.toggle('active', v === view);
     }
-    if (view !== 'edit' && previewStale) renderPreview();
+    const d = activeDoc();
+    if (view !== 'edit' && d && d.html === null) renderPreview(prev === 'edit');
     if (view !== 'read') editor.focus();
   }
 
@@ -475,28 +661,15 @@
 
   // ---------------- File operations ----------------
 
-  async function confirmDiscard(question) {
-    if (!isDirty()) return true;
-    return tauri.ask(question, { title: 'Glance', kind: 'warning' });
-  }
-
-  function loadContent(path, content) {
-    currentPath = path;
-    savedContent = content;
-    editor.value = content;
-    previewStale = true;
-    if (document.body.dataset.view !== 'edit') renderPreview();
-    updateTitle();
-    updateHeadingSelect();
-    if (previewPane) previewPane.scrollTop = 0;
-    editor.setSelectionRange(0, 0);
-    editor.scrollTop = 0;
-  }
-
-  async function openPath(path) {
+  async function openPath(path, options) {
+    const existing = findByPath(path);
+    if (existing) {           // already open: just go there, like a browser
+      activate(existing.id, options && options.focusEditor);
+      return true;
+    }
     try {
       const content = await tauri.invoke('read_text_file', { path });
-      loadContent(path, content);
+      addDoc(path, content, options);
       return true;
     } catch (err) {
       showToast(String(err), true);
@@ -504,26 +677,37 @@
     }
   }
 
-  async function fileNew() {
-    if (!(await confirmDiscard('You have unsaved changes. Discard them?'))) return;
-    loadContent(null, '');
+  // With tabs, New and Open never destroy anything, so neither needs to ask
+  // about unsaved work — that question moved to closing a tab.
+  function fileNew() {
+    // An explicit "new tab" always makes one, even from a blank document —
+    // reusing the placeholder here would make Ctrl+T look broken.
+    addDoc(null, '', { replaceDisposable: false });
     setView('edit');
   }
 
   async function fileOpen() {
-    if (!(await confirmDiscard('You have unsaved changes. Discard them?'))) return;
-    const path = await tauri.openDialog({ multiple: false, filters: MD_FILTERS });
-    if (typeof path === 'string' && path) await openPath(path);
+    const picked = await tauri.openDialog({ multiple: true, filters: MD_FILTERS });
+    if (!picked) return;
+    const paths = Array.isArray(picked) ? picked : [picked];
+    for (const p of paths) {
+      if (typeof p === 'string' && p) await openPath(p);
+    }
   }
 
   async function writeTo(path) {
+    const d = activeDoc();
+    if (!d) return false;
     // Snapshot now: keystrokes typed while the write is in flight must not
     // be marked as saved.
     const contents = editor.value;
     try {
       await tauri.invoke('write_text_file', { path, contents });
-      currentPath = path;
-      savedContent = contents;
+      d.path = path;
+      d.content = contents;
+      d.savedContent = contents;
+      if (d.html !== null) d.html = null; // base path may have changed
+      renderTabs();
       updateTitle();
       showToast('Saved');
       return true;
@@ -534,8 +718,9 @@
   }
 
   async function fileSaveAs() {
+    const d = activeDoc();
     let path = await tauri.saveDialog({
-      defaultPath: currentPath || 'Untitled.md',
+      defaultPath: (d && d.path) || 'Untitled.md',
       filters: MD_FILTERS,
     });
     if (!path) return false;
@@ -544,8 +729,10 @@
   }
 
   async function fileSave() {
-    if (!currentPath) return fileSaveAs();
-    return writeTo(currentPath);
+    const d = activeDoc();
+    if (!d) return false;
+    if (!d.path) return fileSaveAs();
+    return writeTo(d.path);
   }
 
   // ---------------- Help ----------------
@@ -647,11 +834,17 @@
   // ---------------- Editor events ----------------
 
   editor.addEventListener('input', () => {
+    const d = activeDoc();
+    if (d) d.content = editor.value;
     scheduleRender();
     updateTitle();
+    renderTabs();
   });
 
   editor.addEventListener('keydown', (e) => {
+    // Ctrl+Tab is tab cycling, handled on window. Without this guard the
+    // editor would swallow it first and indent the line instead.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === 'Enter') handleEnter(e);
     else if (e.key === 'Tab') handleTab(e);
   });
@@ -673,22 +866,39 @@
     if (e.key === 'F5' || (ctrl && !e.altKey && e.key.toLowerCase() === 'r')) {
       e.preventDefault(); return; // block webview reload (incl. Ctrl+Shift+R) — it would drop the document
     }
+
+    // Alt+1..9 jumps to a tab (Alt+9 = last, as in browsers). Ctrl+1/2/3 stays
+    // with the views, which are used far more often in a reader.
+    if (e.altKey && !ctrl && !e.shiftKey) {
+      const m = e.code.match(/^Digit([1-9])$/);
+      if (m) {
+        e.preventDefault();
+        const n = Number(m[1]);
+        const target = n === 9 ? docs[docs.length - 1] : docs[n - 1];
+        if (target) activate(target.id);
+        return;
+      }
+    }
+
     if (!ctrl) return;
     // AltGr arrives as Ctrl+Alt on Windows; those combos type characters
     // (#, @, {, … on European layouts) and must never trigger shortcuts.
     if (e.getModifierState && e.getModifierState('AltGraph')) return;
 
+    // Tab cycling, with the browser and VS Code spellings of it.
+    if (e.key === 'Tab' || e.code === 'PageDown' || e.code === 'PageUp') {
+      const back = e.shiftKey || e.code === 'PageUp';
+      e.preventDefault();
+      cycleTab(back ? -1 : 1);
+      return;
+    }
+
     if (!e.shiftKey && !e.altKey) {
       switch (e.key.toLowerCase()) {
-        case 'n': e.preventDefault(); fileNew(); return;
+        case 'n': case 't': e.preventDefault(); fileNew(); return;
         case 'o': e.preventDefault(); fileOpen(); return;
         case 's': e.preventDefault(); fileSave(); return;
-        case 'w': {
-          e.preventDefault();
-          const win = tauri.currentWindow();
-          if (win) win.close();
-          return;
-        }
+        case 'w': e.preventDefault(); if (activeId !== null) closeDoc(activeId); return;
       }
       switch (e.code) {
         case 'Digit1': e.preventDefault(); setView('edit'); return;
@@ -737,16 +947,19 @@
     }
   });
 
-  // ---------------- Window close & file drop ----------------
+  // ---------------- Window close, file drop, second launch ----------------
 
   const win = tauri.currentWindow();
   if (win && win.onCloseRequested) {
     win.onCloseRequested(async (event) => {
-      if (!isDirty()) return;
-      const close = await tauri.ask(
-        'You have unsaved changes. Close without saving?',
-        { title: 'Glance', kind: 'warning' }
-      );
+      captureActive();
+      const dirty = docs.filter(docDirty);
+      if (!dirty.length) return;
+      const what = dirty.length === 1
+        ? `${baseName(dirty[0].path)} has unsaved changes.`
+        : `${dirty.length} documents have unsaved changes.`;
+      const close = await tauri.ask(`${what} Close without saving?`,
+        { title: 'Glance', kind: 'warning' });
       if (!close) event.preventDefault();
     });
   }
@@ -756,10 +969,18 @@
     webview.onDragDropEvent(async (event) => {
       const payload = event.payload;
       if (!payload || payload.type !== 'drop' || !payload.paths || !payload.paths.length) return;
-      const path = payload.paths.find((p) => MD_EXT_RE.test(p));
-      if (!path) return;
-      if (!(await confirmDiscard('You have unsaved changes. Discard them?'))) return;
-      await openPath(path);
+      for (const p of payload.paths.filter((x) => MD_EXT_RE.test(x))) {
+        await openPath(p);
+      }
+    });
+  }
+
+  // A second launch (double-clicking another .md in Explorer) hands its path
+  // to this window rather than starting a second copy of the app.
+  if (tauri.listen) {
+    tauri.listen('open-file', (event) => {
+      const path = typeof event.payload === 'string' ? event.payload : null;
+      if (path) openPath(path, { focusEditor: false });
     });
   }
 
@@ -771,6 +992,11 @@
     if (tauri.available) {
       try { launchPath = await tauri.invoke('launch_file_path'); } catch (e) {}
     }
+    // Seed an empty doc so there is always exactly one active document.
+    docs = [makeDoc(null, '')];
+    activeId = docs[0].id;
+    editor.value = '';
+
     const opened = launchPath ? await openPath(launchPath) : false;
     if (opened) {
       // Opened with a file (double-click in Explorer): reading is the intent.
@@ -778,9 +1004,9 @@
     } else {
       // Blank start — or the launch file was unreadable, in which case read
       // view would just be an empty page with the editing tools hidden.
-      loadContent(null, '');
       setView('edit');
     }
+    renderTabs();
     updateTitle();
     if (window.__showAppWindow) window.__showAppWindow();
   }

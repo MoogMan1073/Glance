@@ -18,6 +18,7 @@ function tauriStub(opts) {
       openedUrls: [],
       title: '',
       closed: false,
+      listeners: {},
     }, ${JSON.stringify(opts || {})});
     const T = () => window.__TAURI_TEST__;
     window.__TAURI__ = {
@@ -44,9 +45,14 @@ function tauriStub(opts) {
           setTitle: async (t) => { T().title = t; },
           show: async () => {},
           setFocus: async () => {},
+          unminimize: async () => {},
           close: async () => { T().closed = true; },
+          destroy: async () => { T().closed = true; },
           onCloseRequested: (h) => { T().closeHandler = h; },
         }),
+      },
+      event: {
+        listen: (name, h) => { (T().listeners[name] = T().listeners[name] || []).push(h); },
       },
       webview: {
         getCurrentWebview: () => ({
@@ -389,15 +395,18 @@ test('open loads the picked file and clears the dirty marker', async ({ page }) 
   expect(await editorValue(page)).toBe('# Doc A');
 });
 
-test('dirty document shows ● and open prompts before discarding', async ({ page }) => {
-  await boot(page, { askResponse: false, openResponse: 'C:\\docs\\b.md', files: { 'C:\\docs\\b.md': 'B' } });
+test('opening a file never discards unsaved work — it opens another tab', async ({ page }) => {
+  await boot(page, { openResponse: 'C:\\docs\\b.md', files: { 'C:\\docs\\b.md': 'B' } });
   await setEditor(page, 'unsaved work');
   await expect(page).toHaveTitle(/^● Untitled/);
   await page.keyboard.press('Control+o');
-  // User answered "no" to discarding: nothing was opened.
+  // The new file gets its own tab; the dirty draft survives untouched and
+  // nothing had to be asked.
+  await expect(page.locator('.tab')).toHaveCount(2);
+  expect(await editorValue(page)).toBe('B');
+  expect(await page.evaluate(() => window.__TAURI_TEST__.asks.length)).toBe(0);
+  await page.locator('.tab').first().click();
   expect(await editorValue(page)).toBe('unsaved work');
-  const asks = await page.evaluate(() => window.__TAURI_TEST__.asks);
-  expect(asks.length).toBe(1);
 });
 
 test('close request with unsaved changes is blocked when declined', async ({ page }) => {
@@ -497,4 +506,209 @@ test('relative image paths in an unsaved document are left alone', async ({ page
   await page.keyboard.press('Control+2');
   await setEditor(page, '![rel](images/pic.png)');
   expect(await page.locator('#preview img').getAttribute('src')).toBe('images/pic.png');
+});
+
+// ---------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------
+
+const tabNames = (page) =>
+  page.locator('.tab .tab-name').allTextContents();
+
+test('the tab bar stays hidden until a second document is open', async ({ page }) => {
+  await boot(page);
+  await expect(page.locator('body')).toHaveAttribute('data-tabs', 'single');
+  await expect(page.locator('#tabbar')).toBeHidden();
+  await page.keyboard.press('Control+t');
+  await expect(page.locator('body')).toHaveAttribute('data-tabs', 'many');
+  await expect(page.locator('#tabbar')).toBeVisible();
+});
+
+test('opening several files at once gives each its own tab', async ({ page }) => {
+  await boot(page, {
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md', 'C:\\d\\c.md'],
+    files: { 'C:\\d\\a.md': '# A', 'C:\\d\\b.md': '# B', 'C:\\d\\c.md': '# C' },
+  });
+  await page.keyboard.press('Control+o');
+  await expect(page.locator('.tab')).toHaveCount(3);
+  expect(await tabNames(page)).toEqual(['a.md', 'b.md', 'c.md']);
+  // The blank Untitled placeholder was reused rather than left behind.
+  expect(await editorValue(page)).toBe('# C');
+});
+
+test('each tab keeps its own text, caret and dirty state', async ({ page }) => {
+  await boot(page, {
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md'],
+    files: { 'C:\\d\\a.md': 'alpha', 'C:\\d\\b.md': 'beta' },
+  });
+  await page.keyboard.press('Control+o');
+  await page.locator('.tab').first().click();
+  await setEditor(page, 'alpha edited', 5, 5);
+  await expect(page.locator('.tab').first()).toHaveAttribute('data-dirty', 'true');
+
+  await page.locator('.tab').nth(1).click();
+  expect(await editorValue(page)).toBe('beta');
+  await expect(page.locator('.tab').nth(1)).toHaveAttribute('data-dirty', 'false');
+
+  await page.locator('.tab').first().click();
+  expect(await editorValue(page)).toBe('alpha edited');
+  const caret = await page.evaluate(() => document.getElementById('editor').selectionStart);
+  expect(caret).toBe(5);
+});
+
+test('opening an already-open file switches to its tab instead of duplicating', async ({ page }) => {
+  await boot(page, {
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md'],
+    files: { 'C:\\d\\a.md': 'A', 'C:\\d\\b.md': 'B' },
+  });
+  await page.keyboard.press('Control+o');
+  await expect(page.locator('.tab')).toHaveCount(2);
+  await page.evaluate(() => { window.__TAURI_TEST__.openResponse = 'C:\\d\\a.md'; });
+  await page.keyboard.press('Control+o');
+  await expect(page.locator('.tab')).toHaveCount(2);   // no third tab
+  expect(await editorValue(page)).toBe('A');           // switched to it
+});
+
+test('Ctrl+Tab cycles forward and Ctrl+Shift+Tab back, wrapping around', async ({ page }) => {
+  await boot(page, {
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md', 'C:\\d\\c.md'],
+    files: { 'C:\\d\\a.md': 'A', 'C:\\d\\b.md': 'B', 'C:\\d\\c.md': 'C' },
+  });
+  await page.keyboard.press('Control+o');
+  expect(await editorValue(page)).toBe('C');
+  await page.keyboard.press('Control+Tab');            // wraps to first
+  expect(await editorValue(page)).toBe('A');
+  await page.keyboard.press('Control+Tab');
+  expect(await editorValue(page)).toBe('B');
+  await page.keyboard.press('Control+Shift+Tab');
+  expect(await editorValue(page)).toBe('A');
+  await page.keyboard.press('Control+Shift+Tab');      // wraps back to last
+  expect(await editorValue(page)).toBe('C');
+});
+
+test('Alt+N jumps to tab N and Alt+9 to the last one', async ({ page }) => {
+  await boot(page, {
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md', 'C:\\d\\c.md'],
+    files: { 'C:\\d\\a.md': 'A', 'C:\\d\\b.md': 'B', 'C:\\d\\c.md': 'C' },
+  });
+  await page.keyboard.press('Control+o');
+  await page.keyboard.press('Alt+2');
+  expect(await editorValue(page)).toBe('B');
+  await page.keyboard.press('Alt+9');   // last, not ninth
+  expect(await editorValue(page)).toBe('C');
+  await page.keyboard.press('Alt+1');
+  expect(await editorValue(page)).toBe('A');
+});
+
+test('Ctrl+1/2/3 still switch views when several tabs are open', async ({ page }) => {
+  await boot(page, {
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md'],
+    files: { 'C:\\d\\a.md': 'A', 'C:\\d\\b.md': 'B' },
+  });
+  await page.keyboard.press('Control+o');
+  await page.keyboard.press('Control+3');
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'read');
+  expect(await editorValue(page)).toBe('B');  // did not change tab
+  await page.keyboard.press('Control+1');
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
+});
+
+test('closing a clean tab activates a neighbour; the close button works', async ({ page }) => {
+  await boot(page, {
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md', 'C:\\d\\c.md'],
+    files: { 'C:\\d\\a.md': 'A', 'C:\\d\\b.md': 'B', 'C:\\d\\c.md': 'C' },
+  });
+  await page.keyboard.press('Control+o');
+  await page.locator('.tab').nth(1).locator('.tab-close').click();
+  await expect(page.locator('.tab')).toHaveCount(2);
+  expect(await tabNames(page)).toEqual(['a.md', 'c.md']);
+  await page.keyboard.press('Control+w');   // closes the active one (c.md)
+  await expect(page.locator('.tab')).toHaveCount(1);
+  expect(await editorValue(page)).toBe('A');
+});
+
+test('closing a dirty tab asks first and keeps it when declined', async ({ page }) => {
+  await boot(page, {
+    askResponse: false,
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md'],
+    files: { 'C:\\d\\a.md': 'A', 'C:\\d\\b.md': 'B' },
+  });
+  await page.keyboard.press('Control+o');
+  await setEditor(page, 'edited B');
+  await page.keyboard.press('Control+w');
+  await expect(page.locator('.tab')).toHaveCount(2);   // still there
+  expect(await editorValue(page)).toBe('edited B');
+  const asks = await page.evaluate(() => window.__TAURI_TEST__.asks);
+  expect(asks[0]).toContain('b.md');
+});
+
+test('closing the last tab closes the window', async ({ page }) => {
+  await boot(page, { launchFile: 'C:\\d\\a.md', files: { 'C:\\d\\a.md': 'A' } });
+  await page.keyboard.press('Control+w');
+  expect(await page.evaluate(() => window.__TAURI_TEST__.closed)).toBe(true);
+});
+
+test('the close prompt names how many documents are unsaved', async ({ page }) => {
+  await boot(page, {
+    askResponse: false,
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md'],
+    files: { 'C:\\d\\a.md': 'A', 'C:\\d\\b.md': 'B' },
+  });
+  await page.keyboard.press('Control+o');
+  await setEditor(page, 'dirty B');
+  await page.locator('.tab').first().click();
+  await setEditor(page, 'dirty A');
+  await page.evaluate(async () => {
+    await window.__TAURI_TEST__.closeHandler({ preventDefault: () => {} });
+  });
+  const asks = await page.evaluate(() => window.__TAURI_TEST__.asks);
+  expect(asks[asks.length - 1]).toContain('2 documents');
+});
+
+test('a second launch opens its file as a new tab in this window', async ({ page }) => {
+  await boot(page, {
+    launchFile: 'C:\\d\\a.md',
+    files: { 'C:\\d\\a.md': 'A', 'C:\\d\\second.md': '# Second' },
+  });
+  await expect(page.locator('.tab')).toHaveCount(1);
+  await page.evaluate(async () => {
+    for (const h of window.__TAURI_TEST__.listeners['open-file'] || []) {
+      await h({ payload: 'C:\\d\\second.md' });
+    }
+  });
+  await expect(page.locator('.tab')).toHaveCount(2);
+  await expect(page).toHaveTitle(/^second\.md/);
+  await expect(page.locator('#preview h1')).toHaveText('Second');
+});
+
+test('dropping several files opens them all as tabs', async ({ page }) => {
+  await boot(page, { files: { 'C:\\d\\x.md': 'X', 'C:\\d\\y.md': 'Y' } });
+  await page.evaluate(async () => {
+    await window.__TAURI_TEST__.dropHandler({
+      payload: { type: 'drop', paths: ['C:\\d\\x.md', 'C:\\d\\y.md', 'C:\\d\\skip.png'] },
+    });
+  });
+  await expect(page.locator('.tab')).toHaveCount(2);
+  expect(await tabNames(page)).toEqual(['x.md', 'y.md']);
+});
+
+test('saving an untitled tab renames it', async ({ page }) => {
+  await boot(page, { saveResponse: 'C:\\out\\named.md' });
+  await page.keyboard.press('Control+t');
+  await setEditor(page, '# named');
+  await page.keyboard.press('Control+s');
+  await expect(page).toHaveTitle(/^named\.md - Glance/);
+  expect(await tabNames(page)).toContain('named.md');
+});
+
+test('each tab resolves relative images against its own folder', async ({ page }) => {
+  await boot(page, {
+    openResponse: ['C:\\one\\a.md', 'C:\\two\\b.md'],
+    files: { 'C:\\one\\a.md': '![p](img/p.png)', 'C:\\two\\b.md': '![p](img/p.png)' },
+  });
+  await page.keyboard.press('Control+o');
+  await page.keyboard.press('Control+3');
+  expect(await page.locator('#preview img').getAttribute('src')).toBe('stub-asset://C:\\two/img/p.png');
+  await page.locator('.tab').first().click();
+  expect(await page.locator('#preview img').getAttribute('src')).toBe('stub-asset://C:\\one/img/p.png');
 });

@@ -13,6 +13,10 @@ reading it in well under a second.
   **Split** (side-by-side with live preview and synced scrolling).
   Opening a file from Explorer starts in Read view; a new blank file starts
   in Edit view.
+- **Tabs** — several documents open at once, browser-style, each keeping its
+  own cursor and scroll position. The tab bar only appears once there's a
+  second document, so single-file reading stays clean. Opening a `.md` from
+  Explorer adds a tab to the running window instead of launching another copy.
 - **Word-like toolbar** — headings, bold, italic, strikethrough, highlight,
   inline code, code blocks, links, images, blockquotes, bulleted / numbered /
   checkbox lists, tables, horizontal rules.
@@ -59,7 +63,8 @@ launch. The UI itself is plain HTML/CSS/JS with no framework.
 
 | | |
 | --- | --- |
-| **Files** | Ctrl+N new · Ctrl+O open · Ctrl+S save · Ctrl+Shift+S save as · Ctrl+W close |
+| **Files** | Ctrl+N new · Ctrl+O open · Ctrl+S save · Ctrl+Shift+S save as |
+| **Tabs** | Ctrl+T new · Ctrl+W close · Ctrl+Tab / Ctrl+Shift+Tab cycle · Alt+1…8 jump · Alt+9 last |
 | **Views** | Ctrl+1 edit · Ctrl+2 split · Ctrl+3 read |
 | **Text** | Ctrl+B bold · Ctrl+I italic · Ctrl+Shift+X strikethrough · Ctrl+Shift+H highlight |
 | **Code** | Ctrl+E inline code · Ctrl+Shift+C code block |

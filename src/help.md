@@ -10,17 +10,39 @@ A fast, minimal reader and editor for Markdown files.
 | **Edit** | Ctrl+1 | Raw Markdown text only. New files start here. |
 | **Split** | Ctrl+2 | Editor on the left, live preview on the right. |
 
+## Tabs
+
+Several documents stay open at once, like browser tabs. The tab bar appears
+as soon as there's a second one, and each tab remembers its own text, cursor
+position, and scroll place.
+
+Opening a file that's already open just switches to it. Double-clicking a
+`.md` file in Explorer adds it to this window rather than starting a second
+copy of Glance.
+
+| Shortcut | Action |
+| -------- | ------ |
+| Ctrl+T | New tab |
+| Ctrl+W | Close tab (closes the window if it's the last one) |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
+| Ctrl+PageDown / Ctrl+PageUp | Next / previous tab |
+| Alt+1 … Alt+8 | Jump to tab 1–8 |
+| Alt+9 | Jump to the last tab |
+
+Middle-clicking a tab closes it. A dot in place of the × means that
+document has unsaved changes.
+
 ## Keyboard shortcuts
 
 ### Files
 
 | Shortcut | Action |
 | -------- | ------ |
-| Ctrl+N | New file |
-| Ctrl+O | Open file… |
+| Ctrl+N | New file (new tab) |
+| Ctrl+O | Open file… (select several at once) |
 | Ctrl+S | Save |
 | Ctrl+Shift+S | Save As… |
-| Ctrl+W | Close window |
+| Ctrl+W | Close tab |
 
 ### Formatting
 

@@ -148,6 +148,92 @@ body {
 
 body[data-view="read"] .edit-only { display: none; }
 
+/* ---------------- Tab bar ---------------- */
+
+#tabbar {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  user-select: none;
+}
+
+/* A lone tab is just chrome in the way — the reader case stays clean. */
+body[data-tabs="single"] #tabbar { display: none; }
+
+#tabbar::-webkit-scrollbar { height: 6px; }
+#tabbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 220px;
+  min-width: 90px;
+  padding: 0 6px 0 12px;
+  height: 32px;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tab:hover { background: var(--btn-hover); }
+
+.tab[aria-selected="true"] {
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.tab-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.tab-close:hover { background: var(--btn-active); }
+.tab-close svg { width: 9px; height: 9px; fill: currentColor; }
+
+/* Unsaved work shows as a dot until you reach for the close button. */
+.tab[data-dirty="true"] .tab-close svg { display: none; }
+.tab[data-dirty="true"] .tab-close::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.tab[data-dirty="true"] .tab-close:hover::before { display: none; }
+.tab[data-dirty="true"] .tab-close:hover svg { display: block; }
+
 /* ---------------- Main panes ---------------- */
 
 #main {
@@ -377,7 +463,7 @@ body[data-view="split"] #editorPane { border-right: 1px solid var(--border); }
 /* ---------------- Print: rendered document only ---------------- */
 
 @media print {
-  #toolbar, #editorPane, #helpOverlay, #toast { display: none !important; }
+  #toolbar, #tabbar, #editorPane, #helpOverlay, #toast { display: none !important; }
   html, body { overflow: visible; height: auto; }
   body { display: block; background: #fff; color: #000; }
   #main { display: block; }
