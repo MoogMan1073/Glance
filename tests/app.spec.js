@@ -19,6 +19,7 @@ function tauriStub(opts) {
       title: '',
       closed: false,
       listeners: {},
+      askDelay: 0,
     }, ${JSON.stringify(opts || {})});
     const T = () => window.__TAURI_TEST__;
     window.__TAURI__ = {
@@ -36,7 +37,11 @@ function tauriStub(opts) {
         },
       },
       dialog: {
-        ask: async (msg) => { T().asks.push(msg); return T().askResponse; },
+        ask: async (msg) => {
+          T().asks.push(msg);
+          if (T().askDelay) await new Promise((r) => setTimeout(r, T().askDelay));
+          return T().askResponse;
+        },
         open: async () => T().openResponse,
         save: async () => T().saveResponse,
       },
@@ -711,4 +716,52 @@ test('each tab resolves relative images against its own folder', async ({ page }
   expect(await page.locator('#preview img').getAttribute('src')).toBe('stub-asset://C:\\two/img/p.png');
   await page.locator('.tab').first().click();
   expect(await page.locator('#preview img').getAttribute('src')).toBe('stub-asset://C:\\one/img/p.png');
+});
+
+test('a second close request while the prompt is open cannot delete another tab', async ({ page }) => {
+  // The confirmation dialog stays up for as long as the user takes to answer.
+  // A stalled UI can queue two clicks on the same X; the second must not
+  // splice a stale index and take an unrelated document with it.
+  await boot(page, {
+    askDelay: 200,
+    askResponse: true,
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md', 'C:\\d\\c.md'],
+    files: { 'C:\\d\\a.md': 'A', 'C:\\d\\b.md': 'B', 'C:\\d\\c.md': 'C' },
+  });
+  await page.keyboard.press('Control+o');
+  await setEditor(page, 'C precious unsaved');      // c.md dirty
+  await page.locator('.tab').nth(1).click();
+  await setEditor(page, 'B dirty');                 // b.md dirty
+
+  // Two clicks land on b.md's X before the first prompt resolves.
+  await page.evaluate(() => {
+    const x = document.querySelectorAll('.tab')[1].querySelector('.tab-close');
+    x.click();
+    x.click();
+  });
+  await page.waitForTimeout(600);
+
+  expect(await tabNames(page)).toEqual(['a.md', 'c.md']);
+  // Only one prompt, and c.md kept its unsaved text.
+  expect(await page.evaluate(() => window.__TAURI_TEST__.asks.length)).toBe(1);
+  await page.locator('.tab').nth(1).click();
+  expect(await editorValue(page)).toBe('C precious unsaved');
+});
+
+test('holding Ctrl+W does not close a tab per key repeat', async ({ page }) => {
+  await boot(page, {
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md', 'C:\\d\\c.md'],
+    files: { 'C:\\d\\a.md': 'A', 'C:\\d\\b.md': 'B', 'C:\\d\\c.md': 'C' },
+  });
+  await page.keyboard.press('Control+o');
+  await page.evaluate(() => {
+    for (let i = 0; i < 4; i++) {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'w', code: 'KeyW', ctrlKey: true, repeat: i > 0,
+        bubbles: true, cancelable: true,
+      }));
+    }
+  });
+  await page.waitForTimeout(200);
+  await expect(page.locator('.tab')).toHaveCount(2); // exactly one closed
 });

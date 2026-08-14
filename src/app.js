@@ -271,35 +271,51 @@
     return doc;
   }
 
+  // Closes with a confirmation dialog open are re-entrant: the click, the
+  // middle-click and Ctrl+W all reach here, and the dialog can stay up for as
+  // long as the user takes to answer. Without a guard a second request for the
+  // same document gets its own prompt and then splices a stale index.
+  const closingIds = new Set();
+
   async function closeDoc(id) {
+    if (closingIds.has(id)) return false;
     const d = docs.find((x) => x.id === id);
     if (!d) return false;
-    if (d.id === activeId) captureActive();
-    if (docDirty(d)) {
-      const ok = await tauri.ask(
-        `${baseName(d.path)} has unsaved changes. Close it anyway?`,
-        { title: 'Glance', kind: 'warning' }
-      );
-      if (!ok) return false;
-    }
-    const idx = docs.indexOf(d);
-    docs.splice(idx, 1);
+    closingIds.add(id);
+    try {
+      if (d.id === activeId) captureActive();
+      if (docDirty(d)) {
+        const ok = await tauri.ask(
+          `${baseName(d.path)} has unsaved changes. Close it anyway?`,
+          { title: 'Glance', kind: 'warning' }
+        );
+        if (!ok) return false;
+      }
+      // Re-find rather than trusting an index taken before the await: if this
+      // document is already gone, indexOf returns -1 and splice(-1, 1) would
+      // delete an unrelated tab along with its unsaved work.
+      const idx = docs.indexOf(d);
+      if (idx === -1) return false;
+      docs.splice(idx, 1);
 
-    if (!docs.length) {
-      // Last tab closed: nothing left to show, so the window goes with it.
-      const win = tauri.currentWindow();
-      if (win) win.destroy ? win.destroy() : win.close();
-      else { addDoc(null, ''); }
+      if (!docs.length) {
+        // Last tab closed: nothing left to show, so the window goes with it.
+        const win = tauri.currentWindow();
+        if (win) win.destroy ? win.destroy() : win.close();
+        else { addDoc(null, ''); }
+        return true;
+      }
+      if (d.id === activeId) {
+        const next = docs[Math.min(idx, docs.length - 1)];
+        activeId = null;         // force activate() past its no-op guard
+        activate(next.id);
+      } else {
+        renderTabs();
+      }
       return true;
+    } finally {
+      closingIds.delete(id);
     }
-    if (d.id === activeId) {
-      const next = docs[Math.min(idx, docs.length - 1)];
-      activeId = null;         // force activate() past its no-op guard
-      activate(next.id);
-    } else {
-      renderTabs();
-    }
-    return true;
   }
 
   function cycleTab(delta) {
@@ -898,7 +914,8 @@
         case 'n': case 't': e.preventDefault(); fileNew(); return;
         case 'o': e.preventDefault(); fileOpen(); return;
         case 's': e.preventDefault(); fileSave(); return;
-        case 'w': e.preventDefault(); if (activeId !== null) closeDoc(activeId); return;
+        // e.repeat: holding Ctrl+W must not queue a close per key repeat.
+        case 'w': e.preventDefault(); if (!e.repeat && activeId !== null) closeDoc(activeId); return;
       }
       switch (e.code) {
         case 'Digit1': e.preventDefault(); setView('edit'); return;
