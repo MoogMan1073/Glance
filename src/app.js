@@ -33,9 +33,12 @@
 
   // ---------------- Elements ----------------
 
-  const editor = document.getElementById('editor');
+  // `editor` is whichever document's textarea is on screen; activate() swaps it.
+  let editor = null;
+  const editorPane = document.getElementById('editorPane');
   const preview = document.getElementById('preview');
   const previewPane = document.getElementById('previewPane');
+  const helpPanel = document.getElementById('helpPanel');
   const tabbar = document.getElementById('tabbar');
   const headingSelect = document.getElementById('sel-heading');
   const themeBtn = document.getElementById('btn-theme');
@@ -53,18 +56,37 @@
   let seq = 0;
   let helpLoaded = false;
 
+  // Each document gets its own textarea rather than sharing one and swapping
+  // .value. A textarea's undo stack, caret and scroll position belong to the
+  // element: give every document its own and all three survive a tab switch
+  // for free. Reusing one would reset undo history on every switch.
+  function createEditorEl(doc) {
+    const ta = document.createElement('textarea');
+    ta.className = 'editor';
+    ta.spellcheck = false;
+    ta.placeholder = '# Start writing Markdown…';
+    ta.setAttribute('aria-label', 'Markdown editor');
+    ta.value = doc.content;
+    ta.hidden = true;
+    attachEditorListeners(ta);
+    editorPane.appendChild(ta);
+    return ta;
+  }
+
   function makeDoc(path, content) {
-    return {
+    const doc = {
       id: ++seq,
       path: path || null,
       content: content || '',
       savedContent: content || '',
-      selStart: 0,
-      selEnd: 0,
       editorScroll: 0,
       previewScroll: 0,
-      html: null, // cached render; null means stale
+      html: null,       // cached render; null means stale
+      dirtyShown: null, // last dirty state drawn in the tab strip
+      el: null,
     };
+    doc.el = createEditorEl(doc);
+    return doc;
   }
 
   const activeDoc = () => docs.find((d) => d.id === activeId) || null;
@@ -72,16 +94,34 @@
   const isDirty = () => docDirty(activeDoc());
   const findByPath = (path) => docs.find((d) => d.path === path) || null;
 
-  // Pull the live editor state back into the active doc before anything reads
-  // or replaces it — the textarea is the source of truth while a doc is shown.
+  // The caret lives in the doc's own textarea and survives on its own, but
+  // scroll does not: a hidden element loses scrollTop, and focus() then jumps
+  // to wherever the caret is. So scroll is tracked here and restored by hand.
+  // Reading scrollTop from a pane that is currently display:none returns 0,
+  // which would wipe the stored value — only record what is actually visible.
   function captureActive() {
     const d = activeDoc();
-    if (!d) return;
+    if (!d || !editor) return;
+    const view = document.body.dataset.view;
     d.content = editor.value;
-    d.selStart = editor.selectionStart;
-    d.selEnd = editor.selectionEnd;
-    d.editorScroll = editor.scrollTop;
-    d.previewScroll = previewPane.scrollTop;
+    if (view !== 'read') d.editorScroll = editor.scrollTop;
+    if (view !== 'edit') d.previewScroll = previewPane.scrollTop;
+  }
+
+  function restoreScrollPositions() {
+    const d = activeDoc();
+    if (!d) return;
+    const view = document.body.dataset.view;
+    if (view !== 'read' && editor) editor.scrollTop = d.editorScroll;
+    if (view !== 'edit') previewPane.scrollTop = d.previewScroll;
+  }
+
+  // Focus belongs wherever the user can act: the editor, or the reading pane
+  // (which needs focus for PageDown and the arrow keys to scroll it).
+  function restoreFocus() {
+    if (!helpOverlay.hidden) return;
+    if (document.body.dataset.view === 'read') previewPane.focus();
+    else if (editor) editor.focus();
   }
 
   // ---------------- Markdown renderer ----------------
@@ -142,12 +182,23 @@
 
   const md = buildRenderer();
 
+  // Which document's HTML is currently sitting in the preview DOM. Tracking
+  // only per-doc cache staleness is not enough: a warm cache would let the
+  // pane keep showing whichever document was rendered into it last.
+  let renderedId = null;
+
   function renderPreview(restoreScroll) {
     const d = activeDoc();
     if (!d) return;
     if (d.html === null) d.html = md.render(d.content, { basePath: d.path });
     preview.innerHTML = d.html;
+    renderedId = d.id;
     if (restoreScroll) previewPane.scrollTop = d.previewScroll;
+  }
+
+  function previewStale() {
+    const d = activeDoc();
+    return !!d && (d.html === null || renderedId !== d.id);
   }
 
   let renderTimer = null;
@@ -156,10 +207,7 @@
     if (d) d.html = null;
     if (document.body.dataset.view === 'edit') return; // render lazily when preview becomes visible
     clearTimeout(renderTimer);
-    renderTimer = setTimeout(() => {
-      const cur = activeDoc();
-      if (cur && cur.html === null) renderPreview(false);
-    }, 120);
+    renderTimer = setTimeout(() => { if (previewStale()) renderPreview(false); }, 120);
   }
 
   // ---------------- Toast ----------------
@@ -188,8 +236,9 @@
 
   const CLOSE_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.1 3 8 6.9 11.9 3 13 4.1 9.1 8l3.9 3.9-1.1 1.1L8 9.1 4.1 13 3 11.9 6.9 8 3 4.1 4.1 3z"/></svg>';
 
-  function renderTabs() {
+  function renderTabs(scrollActiveIntoView) {
     document.body.dataset.tabs = docs.length > 1 ? 'many' : 'single';
+    for (const d of docs) d.dirtyShown = docDirty(d);
     tabbar.textContent = '';
     for (const d of docs) {
       const tab = document.createElement('div');
@@ -213,8 +262,9 @@
       tab.appendChild(close);
 
       tabbar.appendChild(tab);
-      if (d.id === activeId && docs.length > 1) {
-        // Keep the active tab reachable when the strip overflows.
+      // Only chase the active tab when it actually changed — doing it on every
+      // repaint would yank a scrolled strip back while the user is typing.
+      if (d.id === activeId && docs.length > 1 && scrollActiveIntoView) {
         requestAnimationFrame(() => tab.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
       }
     }
@@ -222,20 +272,29 @@
 
   // ---------------- Tab operations ----------------
 
+  function showDoc(d) {
+    if (editor && editor !== d.el) {
+      editor.hidden = true;
+      editor.removeAttribute('id');
+    }
+    activeId = d.id;
+    editor = d.el;
+    editor.hidden = false;
+    editor.id = 'editor';   // the active textarea always carries the id
+  }
+
   function activate(id, focusEditor) {
     if (id === activeId) return;
     captureActive();
     const d = docs.find((x) => x.id === id);
     if (!d) return;
-    activeId = id;
-    editor.value = d.content;
-    editor.setSelectionRange(d.selStart, d.selEnd);
-    editor.scrollTop = d.editorScroll;
+    showDoc(d);
     if (document.body.dataset.view !== 'edit') renderPreview(true);
-    renderTabs();
+    renderTabs(true);
     updateTitle();
     updateHeadingSelect();
-    if (focusEditor !== false && document.body.dataset.view !== 'read') editor.focus();
+    if (focusEditor !== false) restoreFocus();
+    restoreScrollPositions();   // after focus, which scrolls the caret into view
   }
 
   // A brand-new empty doc is a placeholder, not work — opening a file reuses
@@ -256,18 +315,16 @@
     const cur = activeDoc();
     if (opts.replaceDisposable !== false && isDisposable(cur)) {
       docs.splice(docs.indexOf(cur), 1);
+      if (cur.el) cur.el.remove();
     }
     docs.push(doc);
-    activeId = doc.id;
-    editor.value = doc.content;
-    editor.setSelectionRange(0, 0);
-    editor.scrollTop = 0;
+    showDoc(doc);
     previewPane.scrollTop = 0;
     if (document.body.dataset.view !== 'edit') renderPreview(false);
-    renderTabs();
+    renderTabs(true);
     updateTitle();
     updateHeadingSelect();
-    if (opts.focusEditor !== false && document.body.dataset.view !== 'read') editor.focus();
+    if (opts.focusEditor !== false) restoreFocus();
     return doc;
   }
 
@@ -310,8 +367,12 @@
         activeId = null;         // force activate() past its no-op guard
         activate(next.id);
       } else {
-        renderTabs();
+        renderTabs(false);
+        // The close button that had focus was just destroyed; without this the
+        // next keystrokes would go nowhere.
+        restoreFocus();
       }
+      if (d.el) d.el.remove();
       return true;
     } finally {
       closingIds.delete(id);
@@ -333,6 +394,12 @@
     else activate(id);
   });
 
+  // Autoscroll is armed on mousedown, so suppressing it at auxclick is too
+  // late — the strip scrolls horizontally and would start panning.
+  tabbar.addEventListener('mousedown', (e) => {
+    if (e.button === 1 && e.target.closest('.tab')) e.preventDefault();
+  });
+
   // Middle-click closes, as in every browser.
   tabbar.addEventListener('auxclick', (e) => {
     if (e.button !== 1) return;
@@ -348,14 +415,15 @@
 
   function setView(view) {
     if (!VIEWS.includes(view)) return;
+    captureActive();   // record scroll before a pane is hidden and loses it
     const prev = document.body.dataset.view;
     document.body.dataset.view = view;
     for (const v of VIEWS) {
       document.getElementById('btn-view-' + v).classList.toggle('active', v === view);
     }
-    const d = activeDoc();
-    if (view !== 'edit' && d && d.html === null) renderPreview(prev === 'edit');
-    if (view !== 'read') editor.focus();
+    if (view !== 'edit' && previewStale()) renderPreview(prev === 'edit');
+    restoreFocus();
+    restoreScrollPositions();
   }
 
   // ---------------- Theme ----------------
@@ -714,16 +782,28 @@
   async function writeTo(path) {
     const d = activeDoc();
     if (!d) return false;
+    const other = docs.find((x) => x !== d && x.path === path);
+    if (other) {
+      // Two tabs bound to one file would let the stale one silently overwrite
+      // whatever was just written.
+      showToast(`${baseName(path)} is already open in another tab`, true);
+      return false;
+    }
     // Snapshot now: keystrokes typed while the write is in flight must not
     // be marked as saved.
     const contents = editor.value;
     try {
       await tauri.invoke('write_text_file', { path, contents });
+      const pathChanged = d.path !== path;
       d.path = path;
-      d.content = contents;
+      // Only savedContent takes the snapshot. Assigning it to d.content too
+      // would roll the document back over anything typed during the write.
       d.savedContent = contents;
-      if (d.html !== null) d.html = null; // base path may have changed
-      renderTabs();
+      if (pathChanged) {
+        d.html = null;   // relative image bases moved with the file
+        if (document.body.dataset.view !== 'edit') renderPreview(false);
+      }
+      renderTabs(false);
       updateTitle();
       showToast('Saved');
       return true;
@@ -767,8 +847,15 @@
   function toggleHelp(force) {
     const show = force !== undefined ? force : helpOverlay.hidden;
     helpOverlay.hidden = !show;
-    if (show) loadHelp();
-    else if (document.body.dataset.view !== 'read') editor.focus();
+    if (show) {
+      loadHelp();
+      // Without moving focus the overlay is only visually modal: typing would
+      // still edit the document behind it, and PageDown would move the caret
+      // instead of scrolling the help text.
+      helpPanel.focus();
+    } else {
+      restoreFocus();
+    }
   }
 
   // ---------------- Link handling in rendered panes ----------------
@@ -806,8 +893,7 @@
     requestAnimationFrame(() => { syncing = false; });
   }
 
-  editor.addEventListener('scroll', () => syncScroll(editor, previewPane));
-  previewPane.addEventListener('scroll', () => syncScroll(previewPane, editor));
+  previewPane.addEventListener('scroll', () => { if (editor) syncScroll(previewPane, editor); });
 
   // ---------------- Toolbar wiring ----------------
 
@@ -849,25 +935,33 @@
 
   // ---------------- Editor events ----------------
 
-  editor.addEventListener('input', () => {
-    const d = activeDoc();
-    if (d) d.content = editor.value;
-    scheduleRender();
-    updateTitle();
-    renderTabs();
-  });
+  function attachEditorListeners(ta) {
+    ta.addEventListener('input', () => {
+      const d = activeDoc();
+      if (d) d.content = ta.value;
+      scheduleRender();
+      updateTitle();
+      // Redrawing the strip on every keystroke would rebuild every tab and
+      // reset its scroll; only the dirty dot can actually change here.
+      if (d && d.dirtyShown !== docDirty(d)) renderTabs(false);
+    });
 
-  editor.addEventListener('keydown', (e) => {
-    // Ctrl+Tab is tab cycling, handled on window. Without this guard the
-    // editor would swallow it first and indent the line instead.
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === 'Enter') handleEnter(e);
-    else if (e.key === 'Tab') handleTab(e);
-  });
+    ta.addEventListener('keydown', (e) => {
+      // Ctrl+Tab is tab cycling, handled on window. Without this guard the
+      // editor would swallow it first and indent the line instead.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === 'Enter') handleEnter(e);
+      else if (e.key === 'Tab') handleTab(e);
+    });
 
-  ['keyup', 'click', 'focus'].forEach((ev) =>
-    editor.addEventListener(ev, updateHeadingSelect)
-  );
+    ['keyup', 'click', 'focus'].forEach((ev) =>
+      ta.addEventListener(ev, updateHeadingSelect)
+    );
+
+    ta.addEventListener('scroll', () => {
+      if (ta === editor) syncScroll(ta, previewPane);
+    });
+  }
 
   // ---------------- Keyboard shortcuts ----------------
 
@@ -882,6 +976,9 @@
     if (e.key === 'F5' || (ctrl && !e.altKey && e.key.toLowerCase() === 'r')) {
       e.preventDefault(); return; // block webview reload (incl. Ctrl+Shift+R) — it would drop the document
     }
+    // A modal dialog that still lets shortcuts reach the document behind it
+    // isn't modal. Scrolling keys fall through to the focused help panel.
+    if (!helpOverlay.hidden) return;
 
     // Alt+1..9 jumps to a tab (Alt+9 = last, as in browsers). Ctrl+1/2/3 stays
     // with the views, which are used far more often in a reader.
@@ -992,12 +1089,24 @@
     });
   }
 
+  // The print stylesheet un-hides the preview, so printing from Edit view would
+  // otherwise put whatever was rendered last on paper — with tabs, potentially
+  // a different document than the one on screen.
+  window.addEventListener('beforeprint', () => { if (previewStale()) renderPreview(false); });
+
   // A second launch (double-clicking another .md in Explorer) hands its path
   // to this window rather than starting a second copy of the app.
+  async function openLaunched(path) {
+    if (!path) return;
+    const opened = await openPath(path, { focusEditor: false });
+    // Arriving from Explorer means reading, the same as a first launch.
+    if (opened) setView('read');
+  }
+
   if (tauri.listen) {
     tauri.listen('open-file', (event) => {
       const path = typeof event.payload === 'string' ? event.payload : null;
-      if (path) openPath(path, { focusEditor: false });
+      if (path) openLaunched(path);
     });
   }
 
@@ -1011,8 +1120,7 @@
     }
     // Seed an empty doc so there is always exactly one active document.
     docs = [makeDoc(null, '')];
-    activeId = docs[0].id;
-    editor.value = '';
+    showDoc(docs[0]);
 
     const opened = launchPath ? await openPath(launchPath) : false;
     if (opened) {
@@ -1023,7 +1131,16 @@
       // view would just be an empty page with the editing tools hidden.
       setView('edit');
     }
-    renderTabs();
+
+    // Anything a second launch handed over before this script was listening.
+    if (tauri.available) {
+      try {
+        const pending = await tauri.invoke('take_pending_files');
+        for (const p of pending || []) await openLaunched(p);
+      } catch (e) { /* older build without the command */ }
+    }
+
+    renderTabs(true);
     updateTitle();
     if (window.__showAppWindow) window.__showAppWindow();
   }

@@ -20,6 +20,7 @@ function tauriStub(opts) {
       closed: false,
       listeners: {},
       askDelay: 0,
+      pendingFiles: [],
     }, ${JSON.stringify(opts || {})});
     const T = () => window.__TAURI_TEST__;
     window.__TAURI__ = {
@@ -33,6 +34,7 @@ function tauriStub(opts) {
             return T().files[args.path];
           }
           if (cmd === 'write_text_file') { T().files[args.path] = args.contents; return null; }
+          if (cmd === 'take_pending_files') return T().pendingFiles || [];
           throw new Error('unknown command ' + cmd);
         },
       },
@@ -764,4 +766,107 @@ test('holding Ctrl+W does not close a tab per key repeat', async ({ page }) => {
   });
   await page.waitForTimeout(200);
   await expect(page.locator('.tab')).toHaveCount(2); // exactly one closed
+});
+
+// ---------------------------------------------------------------
+// Tab state integrity (regressions found in review)
+// ---------------------------------------------------------------
+
+const twoDocs = {
+  openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md'],
+  files: { 'C:\\d\\a.md': '# AAA\n\nText from a.', 'C:\\d\\b.md': '# BBB\n\nText from b.' },
+};
+
+test('returning to Read view shows the active tab, not the last one rendered', async ({ page }) => {
+  await boot(page, twoDocs);
+  await page.keyboard.press('Control+o');       // a and b open, b active
+  await page.keyboard.press('Control+2');       // split renders b
+  await page.locator('.tab').first().click();   // renders a
+  await page.keyboard.press('Control+1');       // edit view — preview DOM keeps a
+  await page.locator('.tab').nth(1).click();    // back to b; preview not touched
+  await page.keyboard.press('Control+3');       // read view: must re-render b
+  await expect(page.locator('#preview h1')).toHaveText('BBB');
+});
+
+test('undo survives switching away from a tab and back', async ({ page }) => {
+  await boot(page, twoDocs);
+  await page.keyboard.press('Control+o');
+  await page.locator('.tab').first().click();
+  await page.locator('#editor').click();
+  await page.keyboard.type('ZZZ');
+  expect(await editorValue(page)).toContain('ZZZ');
+  await page.locator('.tab').nth(1).click();    // away
+  await page.locator('.tab').first().click();   // and back
+  await page.keyboard.press('Control+z');
+  expect(await editorValue(page)).not.toContain('ZZZ');
+});
+
+test('each tab keeps its editor scroll position', async ({ page }) => {
+  const long = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n');
+  await boot(page, {
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md'],
+    files: { 'C:\\d\\a.md': long, 'C:\\d\\b.md': long },
+  });
+  await page.keyboard.press('Control+o');
+  await page.locator('.tab').first().click();
+  await page.evaluate(() => { document.getElementById('editor').scrollTop = 900; });
+  const before = await page.evaluate(() => document.getElementById('editor').scrollTop);
+  expect(before).toBeGreaterThan(0);
+  await page.locator('.tab').nth(1).click();
+  await page.locator('.tab').first().click();
+  expect(await page.evaluate(() => document.getElementById('editor').scrollTop)).toBe(before);
+});
+
+test('typing during a slow save is not marked as saved', async ({ page }) => {
+  await boot(page, { writeDelay: 250, saveResponse: 'C:\\out\\s.md' });
+  await setEditor(page, 'hello');
+  await page.keyboard.press('Control+s');
+  await setEditor(page, 'hello world');        // typed while the write is in flight
+  await page.waitForTimeout(500);
+  expect(await editorValue(page)).toBe('hello world');
+  await expect(page).toHaveTitle(/^● /);        // still dirty
+  expect(await page.evaluate(() => window.__TAURI_TEST__.files['C:\\out\\s.md'])).toBe('hello');
+});
+
+test('Save As onto a file open in another tab is refused', async ({ page }) => {
+  await boot(page, twoDocs);
+  await page.keyboard.press('Control+o');
+  await page.evaluate(() => { window.__TAURI_TEST__.saveResponse = 'C:\\d\\a.md'; });
+  await setEditor(page, 'clobber');
+  await page.keyboard.press('Control+Shift+s');
+  await expect(page.locator('#toast')).toContainText('already open');
+  // a.md on disk is untouched and no third tab appeared.
+  expect(await page.evaluate(() => window.__TAURI_TEST__.files['C:\\d\\a.md'])).toContain('AAA');
+  await expect(page.locator('.tab')).toHaveCount(2);
+});
+
+test('help is properly modal: typing and shortcuts do not reach the document', async ({ page }) => {
+  await boot(page, twoDocs);
+  await page.keyboard.press('Control+o');
+  await setEditor(page, 'untouched');
+  await page.keyboard.press('F1');
+  await expect(page.locator('#helpOverlay')).toBeVisible();
+  await page.keyboard.type('XYZ');
+  await page.keyboard.press('Control+w');       // must not close a tab
+  await page.keyboard.press('Alt+1');           // must not switch tabs
+  expect(await editorValue(page)).toBe('untouched');
+  await expect(page.locator('.tab')).toHaveCount(2);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#helpOverlay')).toBeHidden();
+});
+
+test('Read view focuses the reading pane so it can be scrolled by keyboard', async ({ page }) => {
+  await boot(page, { launchFile: 'C:\\d\\a.md', files: { 'C:\\d\\a.md': '# A' } });
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'read');
+  expect(await page.evaluate(() => document.activeElement.id)).toBe('previewPane');
+});
+
+test('files queued before the listener existed are drained at startup', async ({ page }) => {
+  await boot(page, {
+    launchFile: 'C:\\d\\a.md',
+    pendingFiles: ['C:\\d\\late.md'],
+    files: { 'C:\\d\\a.md': '# A', 'C:\\d\\late.md': '# Late' },
+  });
+  await expect(page.locator('.tab')).toHaveCount(2);
+  await expect(page).toHaveTitle(/^late\.md/);
 });

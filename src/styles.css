@@ -257,7 +257,9 @@ body[data-view="read"]  #editorPane  { display: none; }
 
 body[data-view="split"] #editorPane { border-right: 1px solid var(--border); }
 
-#editor {
+#editorPane { position: relative; }
+
+.editor {
   width: 100%;
   height: 100%;
   border: none;
@@ -272,7 +274,12 @@ body[data-view="split"] #editorPane { border-right: 1px solid var(--border); }
   tab-size: 2;
 }
 
+.editor[hidden] { display: none; }
+
 #previewPane { overflow-y: auto; background: var(--bg); }
+/* Focused programmatically so the reading pane answers PageDown and arrows;
+   a focus ring around the whole pane would just be noise. */
+#previewPane:focus, #previewPane:focus-visible, #helpPanel:focus { outline: none; }
 
 #preview {
   padding: 22px 32px 60px;

@@ -110,16 +110,16 @@
   <nav id="tabbar" role="tablist" aria-label="Open documents"></nav>
 
   <main id="main">
-    <section id="editorPane">
-      <textarea id="editor" spellcheck="false" placeholder="# Start writing Markdown…" aria-label="Markdown editor"></textarea>
-    </section>
-    <section id="previewPane">
+    <!-- One textarea per open document, created by app.js. Each keeps its own
+         native undo stack and scroll position; the active one carries id="editor". -->
+    <section id="editorPane"></section>
+    <section id="previewPane" tabindex="-1">
       <article id="preview" class="markdown-body" aria-label="Rendered Markdown"></article>
     </section>
   </main>
 
   <div id="helpOverlay" hidden>
-    <div id="helpPanel" role="dialog" aria-modal="true" aria-label="Help">
+    <div id="helpPanel" role="dialog" aria-modal="true" aria-label="Help" tabindex="-1">
       <header id="helpHeader">
         <span>Help — Markdown &amp; Shortcuts</span>
         <button class="tb-btn" id="btn-help-close" title="Close (Esc)" aria-label="Close help">
