@@ -3,3 +3,4 @@ src-tauri/target/
 src-tauri/gen/
 tests/test-results/
 tests/playwright-report/
+tests/zz-*
