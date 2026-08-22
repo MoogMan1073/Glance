@@ -44,6 +44,28 @@ Unsaved text comes along, so there is nothing to save first and nothing to
 confirm. A window showing only one document has nothing to move out, so the
 menu item is greyed out there.
 
+## Column selection
+
+Hold **Alt** and drag to select a rectangle instead of a run of text, the way
+Notepad++ and the code editors do.
+
+- Drag straight down to put a **cursor on each line**, then type — the text
+  appears on every one of them at once. This is the quick way to add `- `,
+  `> ` or `#` to a stack of lines.
+- Drag across as well as down to select a **block**. Typing replaces it on
+  every line; **Backspace** or **Delete** removes it.
+- **Ctrl+C** copies the rectangle, one line per row. **Ctrl+X** cuts it.
+- **Ctrl+V** pastes a rectangle back line for line when the clipboard has the
+  same number of lines; otherwise the same text goes on every line.
+- **Ctrl+Z** undoes the whole block edit in one step, not one step per line.
+- **Esc**, an arrow key, or a plain click ends the column selection.
+
+Lines too short to reach the selected columns are left alone, so a ragged
+block does not pad anything out.
+
+Useful for markdown tables: Alt+drag down a column to fix its width or blank
+it out across every row at once.
+
 ## Keyboard shortcuts
 
 ### Files

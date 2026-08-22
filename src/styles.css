@@ -21,6 +21,7 @@ html[data-boot-theme="light"] {
   --mark-bg: #fff2ac;
   --quote-border: #d1d9e0;
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  --sel-bg: rgba(37, 99, 235, 0.28);
 }
 
 html[data-boot-theme="dark"],
@@ -40,6 +41,7 @@ body[data-theme="dark"] {
   --mark-bg: #8a6d00;
   --quote-border: #3a414a;
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --sel-bg: rgba(79, 142, 247, 0.35);
 }
 
 body[data-theme="light"] {
@@ -58,6 +60,7 @@ body[data-theme="light"] {
   --mark-bg: #fff2ac;
   --quote-border: #d1d9e0;
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  --sel-bg: rgba(37, 99, 235, 0.28);
 }
 
 * { box-sizing: border-box; }
@@ -275,6 +278,38 @@ body[data-view="split"] #editorPane { border-right: 1px solid var(--border); }
 }
 
 .editor[hidden] { display: none; }
+
+/* Never painted: it exists only so ranges can be measured against it. */
+#selMirror {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Column selection is drawn here, over the textarea's own text. */
+#selOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.block-rect {
+  position: absolute;
+  background: var(--sel-bg);
+  border-radius: 1px;
+}
+
+/* A zero-width block is a caret per line — the "type a prefix on ten lines"
+   case, which would otherwise show nothing at all. */
+.block-caret {
+  position: absolute;
+  width: 2px;
+  background: var(--accent);
+}
 
 #previewPane { overflow-y: auto; background: var(--bg); }
 /* Focused programmatically so the reading pane answers PageDown and arrows;

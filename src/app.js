@@ -286,6 +286,7 @@
   function activate(id, focusEditor) {
     if (id === activeId) return;
     captureActive();
+    clearBlock();
     const d = docs.find((x) => x.id === id);
     if (!d) return;
     showDoc(d);
@@ -563,6 +564,7 @@
   function setView(view) {
     if (!VIEWS.includes(view)) return;
     captureActive();   // record scroll before a pane is hidden and loses it
+    clearBlock();
     const prev = document.body.dataset.view;
     document.body.dataset.view = view;
     for (const v of VIEWS) {
@@ -619,6 +621,7 @@
   // undo/redo stack (Ctrl+Z / Ctrl+Y) keeps working.
 
   function replaceRange(start, end, text, selStart, selEnd) {
+    clearBlock();
     editor.focus();
     editor.setSelectionRange(start, end);
     let ok = false;
@@ -890,6 +893,304 @@
     );
   }
 
+  // ---------------- Column (block) selection ----------------
+  // Alt+drag selects a rectangle, the way Notepad++ and the IDEs do. A
+  // textarea has exactly one selection range, so the rectangle is modelled
+  // here and drawn ourselves, and edits are replayed range by range.
+  //
+  // Geometry comes from #selMirror, which reproduces the textarea's box and
+  // typography and holds the same text. A Range over it reports where a
+  // character actually sits, so soft wrap and tabs are handled by the same
+  // layout engine that draws the real thing rather than by arithmetic.
+
+  const selMirror = document.getElementById('selMirror');
+  const selOverlay = document.getElementById('selOverlay');
+
+  let block = null;        // {anchor:{line,col}, head:{line,col}}
+  let blockDragging = false;
+  // Our own execCommand calls re-fire beforeinput on the same textarea; without
+  // this the interceptor would recurse into itself.
+  let applyingBlock = false;
+
+  const MIRROR_KEYS = [
+    'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing',
+    'lineHeight', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+    'textIndent', 'whiteSpace', 'overflowWrap', 'wordBreak', 'tabSize',
+  ];
+
+  function syncMirror() {
+    if (!editor) return null;
+    const cs = getComputedStyle(editor);
+    for (const k of MIRROR_KEYS) selMirror.style[k] = cs[k];
+    selMirror.style.boxSizing = 'border-box';
+    selMirror.style.width = editor.clientWidth + 'px';
+    // Match the textarea's scroll so mirror rects land where the text is drawn.
+    selMirror.style.transform = `translateY(${-editor.scrollTop}px)`;
+    if (selMirror.textContent !== editor.value) selMirror.textContent = editor.value;
+    return selMirror.firstChild;
+  }
+
+  function lineStarts(text) {
+    const starts = [0];
+    for (let i = 0; i < text.length; i++) if (text[i] === '\n') starts.push(i + 1);
+    return starts;
+  }
+
+  const lineEndAt = (text, starts, i) =>
+    i + 1 < starts.length ? starts[i + 1] - 1 : text.length;
+
+  // Rectangle of the character at `col` on `line`; zero-width at the line's end.
+  // Assumes syncMirror() has already run for this gesture — it is called from
+  // binary searches, so re-syncing here would restyle the mirror per probe.
+  function charRect(line, col) {
+    const node = selMirror.firstChild;
+    const text = editor.value;
+    const starts = lineStarts(text);
+    if (line >= starts.length) line = starts.length - 1;
+    const s = starts[line];
+    const len = lineEndAt(text, starts, line) - s;
+    const r = document.createRange();
+    if (!node) {
+      const b = selMirror.getBoundingClientRect();
+      return new DOMRect(b.left, b.top, 0, 0);
+    }
+    if (col < len) {
+      r.setStart(node, s + col);
+      r.setEnd(node, s + col + 1);
+      return r.getBoundingClientRect();
+    }
+    if (len === 0) {
+      // Empty line: measure its newline, which sits at the line's start.
+      if (s < text.length) {
+        r.setStart(node, s);
+        r.setEnd(node, s + 1);
+        const q = r.getBoundingClientRect();
+        return new DOMRect(q.left, q.top, 0, q.height);
+      }
+      const b = selMirror.getBoundingClientRect();
+      return new DOMRect(b.left, b.top, 0, 0);
+    }
+    r.setStart(node, s + len - 1);
+    r.setEnd(node, s + len);
+    const q = r.getBoundingClientRect();
+    return new DOMRect(q.right, q.top, 0, q.height);   // just past the last character
+  }
+
+  // Which line/column sits under a point, in reading order.
+  function pointToLineCol(clientX, clientY) {
+    syncMirror();
+    const text = editor.value;
+    const starts = lineStarts(text);
+    let lo = 0, hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const rect = charRect(mid, 0);
+      const bottom = rect.height ? rect.bottom : rect.top;
+      if (bottom <= clientY) lo = mid + 1; else hi = mid;
+    }
+    // A wrapped line spans several rows, so step back while the point sits
+    // below this line's first row but still inside the previous line.
+    let line = lo;
+    while (line > 0) {
+      const prev = charRect(line - 1, 0);
+      const here = charRect(line, 0);
+      if (here.top <= clientY || prev.bottom > clientY) break;
+      line -= 1;
+    }
+    const len = lineEndAt(text, starts, line) - starts[line];
+    let a = 0, b = len;
+    while (a < b) {
+      const mid = (a + b) >> 1;
+      const r = charRect(line, mid);
+      let before;
+      if (r.height && r.bottom <= clientY) before = true;
+      else if (r.height && r.top > clientY) before = false;
+      else before = (r.left + r.right) / 2 <= clientX;
+      if (before) a = mid + 1; else b = mid;
+    }
+    return { line, col: a };
+  }
+
+  function normBlock() {
+    const l0 = Math.min(block.anchor.line, block.head.line);
+    const l1 = Math.max(block.anchor.line, block.head.line);
+    const c0 = Math.min(block.anchor.col, block.head.col);
+    const c1 = Math.max(block.anchor.col, block.head.col);
+    return { l0, l1, c0, c1 };
+  }
+
+  // The block as concrete offset ranges, clamped to each line's length.
+  function blockRanges() {
+    const text = editor.value;
+    const starts = lineStarts(text);
+    const { l0, l1, c0, c1 } = normBlock();
+    const out = [];
+    for (let line = l0; line <= l1 && line < starts.length; line++) {
+      const s = starts[line];
+      const len = lineEndAt(text, starts, line) - s;
+      out.push({
+        line,
+        lineStart: s,
+        lineEnd: s + len,
+        start: s + Math.min(c0, len),
+        end: s + Math.min(c1, len),
+      });
+    }
+    return out;
+  }
+
+  function renderBlock() {
+    selOverlay.textContent = '';
+    if (!block || !editor || document.body.dataset.view === 'read') return;
+    const node = syncMirror();
+    if (!node) return;
+    const origin = selOverlay.getBoundingClientRect();
+    const text = editor.value;
+    const starts = lineStarts(text);
+    const { l0, l1, c0, c1 } = normBlock();
+    for (let line = l0; line <= l1 && line < starts.length; line++) {
+      const s = starts[line];
+      const len = lineEndAt(text, starts, line) - s;
+      if (c0 === c1) {
+        const p = charRect(line, Math.min(c0, len));
+        const el = document.createElement('div');
+        el.className = 'block-caret';
+        el.style.left = (p.left - origin.left) + 'px';
+        el.style.top = (p.top - origin.top) + 'px';
+        el.style.height = (p.height || parseFloat(getComputedStyle(editor).lineHeight) || 16) + 'px';
+        selOverlay.appendChild(el);
+        continue;
+      }
+      const a = Math.min(c0, len);
+      const b = Math.min(c1, len);
+      if (b <= a) continue;   // this line is too short to reach the column range
+      const r = document.createRange();
+      r.setStart(node, s + a);
+      r.setEnd(node, s + b);
+      for (const q of r.getClientRects()) {
+        if (!q.width) continue;
+        const el = document.createElement('div');
+        el.className = 'block-rect';
+        el.style.left = (q.left - origin.left) + 'px';
+        el.style.top = (q.top - origin.top) + 'px';
+        el.style.width = q.width + 'px';
+        el.style.height = q.height + 'px';
+        selOverlay.appendChild(el);
+      }
+    }
+  }
+
+  function clearBlock() {
+    if (!block) return;
+    block = null;
+    selOverlay.textContent = '';
+  }
+
+  const blockActive = () => !!block;
+
+  // Park the real caret at the block's head so the native highlight does not
+  // argue with the one we drew.
+  function afterBlockEdit() {
+    syncMirror();
+    const text = editor.value;
+    const starts = lineStarts(text);
+    const { l1, c0 } = normBlock();
+    const line = Math.min(l1, starts.length - 1);
+    const len = lineEndAt(text, starts, line) - starts[line];
+    const off = starts[line] + Math.min(c0, len);
+    editor.setSelectionRange(off, off);
+    renderBlock();
+  }
+
+  // The whole affected span is rebuilt and written back as ONE edit. Applying
+  // each line separately would work, but it would also push one entry per line
+  // onto the undo stack — so a block edit across twelve lines would take twelve
+  // presses of Ctrl+Z to undo. A single execCommand keeps it to one.
+  function writeSpan(ranges, perLine) {
+    if (!ranges.length) return;
+    const text = editor.value;
+    const from = ranges[0].start;
+    const to = ranges[ranges.length - 1].end;
+    let out = '';
+    let cursor = from;
+    ranges.forEach((r, i) => {
+      out += text.slice(cursor, r.start);
+      out += Array.isArray(perLine) ? (perLine[i] || '') : perLine;
+      cursor = r.end;
+    });
+    out += text.slice(cursor, to);
+    if (to === from && !out) return;   // nothing to do
+    applyingBlock = true;
+    try {
+      editor.setSelectionRange(from, to);
+      if (!out) document.execCommand('delete');
+      else document.execCommand('insertText', false, out);
+    } finally {
+      applyingBlock = false;
+    }
+  }
+
+  function replaceBlock(perLine) {
+    writeSpan(blockRanges(), perLine);
+  }
+
+  function typeIntoBlock(text) {
+    const { l0, l1, c0 } = normBlock();
+    replaceBlock(text);
+    const col = c0 + text.length;
+    block = { anchor: { line: l0, col }, head: { line: l1, col } };
+    afterBlockEdit();
+  }
+
+  function deleteBlock(backwards) {
+    const { l0, l1, c0, c1 } = normBlock();
+    const wide = c1 > c0;
+    let ranges = blockRanges();
+    if (!wide) {
+      // A zero-width block deletes one character per line instead.
+      ranges = ranges.map((r) => {
+        if (backwards) return r.start > r.lineStart ? { ...r, start: r.start - 1 } : r;
+        return r.end < r.lineEnd ? { ...r, end: r.end + 1 } : r;
+      });
+    }
+    if (!ranges.some((r) => r.end > r.start)) return;
+    writeSpan(ranges, '');
+    const col = wide ? c0 : (backwards ? Math.max(0, c0 - 1) : c0);
+    block = { anchor: { line: l0, col }, head: { line: l1, col } };
+    afterBlockEdit();
+  }
+
+  const blockWide = () => { const { c0, c1 } = normBlock(); return c1 > c0; };
+
+  const blockText = () => {
+    const text = editor.value;
+    return blockRanges().map((r) => text.slice(r.start, r.end)).join('\n');
+  };
+
+  // ---- Pointer gesture ----
+
+  function beginBlockDrag(e) {
+    syncMirror();
+    const pos = pointToLineCol(e.clientX, e.clientY);
+    block = { anchor: pos, head: pos };
+    blockDragging = true;
+    renderBlock();
+    const off = lineStarts(editor.value)[pos.line] + pos.col;
+    editor.setSelectionRange(off, off);
+  }
+
+  window.addEventListener('pointermove', (e) => {
+    if (!blockDragging || !editor) return;
+    block.head = pointToLineCol(e.clientX, e.clientY);
+    renderBlock();
+  });
+
+  window.addEventListener('pointerup', () => { blockDragging = false; });
+
+  // ---- Keeping the drawing honest ----
+
+  window.addEventListener('resize', () => { if (block) renderBlock(); });
+
   // ---------------- File operations ----------------
 
   async function openPath(path, options) {
@@ -1106,7 +1407,86 @@
     );
 
     ta.addEventListener('scroll', () => {
-      if (ta === editor) syncScroll(ta, previewPane);
+      if (ta !== editor) return;
+      syncScroll(ta, previewPane);
+      if (block) renderBlock();
+    });
+
+    // Alt+drag starts a column selection; a plain click ends one.
+    ta.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      if (e.altKey) {
+        e.preventDefault();   // otherwise the textarea starts its own selection
+        beginBlockDrag(e);
+      } else {
+        clearBlock();
+      }
+    });
+
+    // With a column selection up, typing and deleting apply to every line in
+    // it, so the native single-range edit has to be replaced wholesale.
+    ta.addEventListener('beforeinput', (e) => {
+      if (!blockActive() || applyingBlock) return;
+      switch (e.inputType) {
+        case 'insertText':
+          if (typeof e.data !== 'string') return;
+          e.preventDefault();
+          typeIntoBlock(e.data);
+          return;
+        case 'deleteContentBackward':
+          e.preventDefault();
+          deleteBlock(true);
+          return;
+        case 'deleteContentForward':
+          e.preventDefault();
+          deleteBlock(false);
+          return;
+        case 'insertFromPaste':
+          return;             // handled by the paste listener
+        default:
+          // Enter, undo, redo and anything else: drop the block and behave
+          // normally rather than guessing at a rectangular meaning for it.
+          clearBlock();
+      }
+    });
+
+    ta.addEventListener('copy', (e) => {
+      if (!blockActive() || !e.clipboardData) return;
+      e.preventDefault();
+      e.clipboardData.setData('text/plain', blockText());
+    });
+
+    ta.addEventListener('cut', (e) => {
+      if (!blockActive() || !e.clipboardData) return;
+      e.preventDefault();
+      if (!blockWide()) return;   // nothing selected to cut
+      e.clipboardData.setData('text/plain', blockText());
+      deleteBlock(false);
+    });
+
+    ta.addEventListener('paste', (e) => {
+      if (!blockActive() || !e.clipboardData) return;
+      const text = e.clipboardData.getData('text/plain');
+      if (text == null) return;
+      e.preventDefault();
+      const lines = text.split(/\r?\n/);
+      const ranges = blockRanges();
+      // A block-shaped clipboard goes back line for line; anything else is
+      // repeated on every line, which is what makes "prefix these ten rows" work.
+      if (lines.length === ranges.length && lines.length > 1) {
+        replaceBlock(lines);
+        clearBlock();
+      } else {
+        typeIntoBlock(text);
+      }
+    });
+
+    ta.addEventListener('keydown', (e) => {
+      if (!blockActive()) return;
+      if (e.key === 'Escape') { e.preventDefault(); clearBlock(); return; }
+      // Moving the caret normally means the user is done with the rectangle.
+      if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End' ||
+          e.key === 'PageUp' || e.key === 'PageDown') clearBlock();
     });
   }
 

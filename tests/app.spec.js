@@ -1002,3 +1002,194 @@ test('a torn-off document that was dirty arrives dirty, in edit view', async ({ 
   await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
   expect(await editorValue(page)).toBe('edited');
 });
+
+// ---------------------------------------------------------------
+// Column (block) selection — Alt+drag
+// ---------------------------------------------------------------
+
+// Character geometry of the live editor, so drags can target a line/column
+// without the test knowing anything about the implementation.
+async function editorGeometry(page) {
+  return page.evaluate(() => {
+    const ta = document.getElementById('editor');
+    const cs = getComputedStyle(ta);
+    const span = document.createElement('span');
+    span.style.cssText = 'position:absolute;visibility:hidden;white-space:pre';
+    span.style.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize}/${cs.lineHeight} ${cs.fontFamily}`;
+    span.textContent = '0'.repeat(20);
+    document.body.appendChild(span);
+    const charW = span.getBoundingClientRect().width / 20;
+    span.remove();
+    const r = ta.getBoundingClientRect();
+    return {
+      x0: r.left + parseFloat(cs.paddingLeft),
+      y0: r.top + parseFloat(cs.paddingTop),
+      charW,
+      lineH: parseFloat(cs.lineHeight),
+    };
+  });
+}
+
+const cell = (g, line, col) => ({
+  x: g.x0 + col * g.charW + g.charW * 0.25,
+  y: g.y0 + line * g.lineH + g.lineH * 0.5,
+});
+
+async function altDrag(page, from, to) {
+  const g = await editorGeometry(page);
+  const a = cell(g, from[0], from[1]);
+  const b = cell(g, to[0], to[1]);
+  await page.keyboard.down('Alt');
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 6 });
+  await page.mouse.up();
+  await page.keyboard.up('Alt');
+}
+
+const GRID = 'alpha one\nbravo two\ncharlie 3\ndelta four';
+
+async function bootEditor(page, text) {
+  await boot(page);
+  await page.keyboard.press('Control+1');
+  await setEditor(page, text || GRID, 0, 0);
+  await page.locator('#editor').click();
+  return page;
+}
+
+test('Alt+drag down a column shows a caret on each line', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 0], [2, 0]);
+  await expect(page.locator('#selOverlay .block-caret')).toHaveCount(3);
+  await expect(page.locator('#selOverlay .block-rect')).toHaveCount(0);
+});
+
+test('typing with a zero-width column inserts on every selected line', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 0], [2, 0]);
+  await page.keyboard.type('- ');
+  expect(await editorValue(page)).toBe('- alpha one\n- bravo two\n- charlie 3\ndelta four');
+});
+
+test('one keystroke across many lines undoes in a single step', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 0], [3, 0]);
+  await page.keyboard.type('>');            // one keystroke, four lines changed
+  expect(await editorValue(page)).toBe('>alpha one\n>bravo two\n>charlie 3\n>delta four');
+  await page.keyboard.press('Control+z');   // and one undo takes all four back
+  expect(await editorValue(page)).toBe(GRID);
+});
+
+test('Alt+drag across columns highlights a rectangle', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 0], [2, 5]);
+  await expect(page.locator('#selOverlay .block-rect')).toHaveCount(3);
+  await expect(page.locator('#selOverlay .block-caret')).toHaveCount(0);
+});
+
+test('Backspace removes the selected rectangle from every line', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 0], [2, 6]);
+  await page.keyboard.press('Backspace');
+  expect(await editorValue(page)).toBe('one\ntwo\ne 3\ndelta four');
+});
+
+test('typing over a rectangle replaces it on every line', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 0], [1, 5]);
+  await page.keyboard.type('X');            // columns 0-4 ("alpha"/"bravo") replaced
+  expect(await editorValue(page)).toBe('X one\nX two\ncharlie 3\ndelta four');
+});
+
+test('a zero-width column Backspace deletes one character per line', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 2], [2, 2]);
+  await page.keyboard.press('Backspace');
+  expect(await editorValue(page)).toBe('apha one\nbavo two\ncarlie 3\ndelta four');
+});
+
+test('copy yields the rectangle, one line per row', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 0], [2, 5]);
+  const copied = await page.evaluate(() => {
+    let out = null;
+    const e = new Event('copy', { bubbles: true, cancelable: true });
+    e.clipboardData = { setData: (_t, v) => { out = v; } };
+    document.getElementById('editor').dispatchEvent(e);
+    return out;
+  });
+  expect(copied).toBe('alpha\nbravo\ncharl');
+});
+
+test('pasting a block-shaped clipboard distributes it line by line', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 0], [2, 0]);
+  await page.evaluate(() => {
+    const e = new Event('paste', { bubbles: true, cancelable: true });
+    e.clipboardData = { getData: () => '1. \n2. \n3. ' };
+    document.getElementById('editor').dispatchEvent(e);
+  });
+  expect(await editorValue(page)).toBe('1. alpha one\n2. bravo two\n3. charlie 3\ndelta four');
+});
+
+test('pasting a single line repeats it on every selected line', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 0], [2, 0]);
+  await page.evaluate(() => {
+    const e = new Event('paste', { bubbles: true, cancelable: true });
+    e.clipboardData = { getData: () => '# ' };
+    document.getElementById('editor').dispatchEvent(e);
+  });
+  expect(await editorValue(page)).toBe('# alpha one\n# bravo two\n# charlie 3\ndelta four');
+});
+
+test('lines too short for the column range are left alone', async ({ page }) => {
+  await bootEditor(page, 'a long first line here\nshort\nanother long line here');
+  await altDrag(page, [0, 10], [2, 15]);
+  await page.keyboard.press('Backspace');
+  // "short" has nothing at columns 10-15, so it survives untouched.
+  expect(await editorValue(page)).toBe('a long firne here\nshort\nanother lone here');
+});
+
+test('Escape and a plain click both clear the column selection', async ({ page }) => {
+  await bootEditor(page);
+  await altDrag(page, [0, 0], [2, 3]);
+  await expect(page.locator('#selOverlay .block-rect')).not.toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#selOverlay > *')).toHaveCount(0);
+
+  await altDrag(page, [0, 0], [2, 3]);
+  await expect(page.locator('#selOverlay .block-rect')).not.toHaveCount(0);
+  await page.locator('#editor').click();
+  await expect(page.locator('#selOverlay > *')).toHaveCount(0);
+});
+
+test('a column selection does not survive switching tabs', async ({ page }) => {
+  await boot(page, {
+    openResponse: ['C:\\d\\a.md', 'C:\\d\\b.md'],
+    files: { 'C:\\d\\a.md': GRID, 'C:\\d\\b.md': GRID },
+  });
+  await page.keyboard.press('Control+o');
+  await page.keyboard.press('Control+1');
+  await page.locator('#editor').click();
+  await altDrag(page, [0, 0], [2, 3]);
+  await expect(page.locator('#selOverlay .block-rect')).not.toHaveCount(0);
+  await page.locator('.tab').first().click();
+  await expect(page.locator('#selOverlay > *')).toHaveCount(0);
+});
+
+test('a normal drag without Alt still selects text the usual way', async ({ page }) => {
+  await bootEditor(page);
+  const g = await editorGeometry(page);
+  const a = cell(g, 0, 0), b = cell(g, 0, 5);
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 4 });
+  await page.mouse.up();
+  const sel = await page.evaluate(() => {
+    const ta = document.getElementById('editor');
+    return ta.value.slice(ta.selectionStart, ta.selectionEnd);
+  });
+  expect(sel).toBe('alpha');
+  await expect(page.locator('#selOverlay > *')).toHaveCount(0);
+});

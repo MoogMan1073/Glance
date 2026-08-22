@@ -112,7 +112,12 @@
   <main id="main">
     <!-- One textarea per open document, created by app.js. Each keeps its own
          native undo stack and scroll position; the active one carries id="editor". -->
-    <section id="editorPane"></section>
+    <section id="editorPane">
+      <!-- Geometry oracle for column selection: lays out the same text with the
+           same typography, so a Range over it reports where a character sits. -->
+      <div id="selMirror" aria-hidden="true"></div>
+      <div id="selOverlay" aria-hidden="true"></div>
+    </section>
     <section id="previewPane" tabindex="-1">
       <article id="preview" class="markdown-body" aria-label="Rendered Markdown"></article>
     </section>

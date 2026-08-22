@@ -20,6 +20,9 @@ reading it in well under a second.
   another copy.
 - **Tear-off windows** — right-click a tab and pick *Move to New Window*, or
   drag the tab out of the window and drop it. Unsaved text travels with it.
+- **Column selection** — Alt+drag selects a rectangle, like Notepad++ and the
+  code editors. Drag down for a cursor on every line and type a prefix onto
+  all of them at once; the whole edit undoes in one step.
 - **Word-like toolbar** — headings, bold, italic, strikethrough, highlight,
   inline code, code blocks, links, images, blockquotes, bulleted / numbered /
   checkbox lists, tables, horizontal rules.
@@ -73,6 +76,7 @@ launch. The UI itself is plain HTML/CSS/JS with no framework.
 | **Code** | Ctrl+E inline code · Ctrl+Shift+C code block |
 | **Structure** | Ctrl+Alt+1…6 heading · Ctrl+Alt+0 paragraph · Ctrl+Shift+Q quote |
 | **Lists** | Ctrl+Shift+8 bullets · Ctrl+Shift+7 numbered · Ctrl+Shift+9 checkboxes |
+| **Select** | Alt+drag column selection · Esc to end it |
 | **App** | Ctrl+K link · Ctrl+Shift+D theme · Ctrl+P print · F1 help |
 
 The full list is in the in-app help (F1).
