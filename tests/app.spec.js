@@ -58,6 +58,7 @@ function tauriStub(opts) {
       },
       window: {
         getCurrentWindow: () => ({
+          label: T().windowLabel || 'main',
           setTitle: async (t) => { T().title = t; },
           show: async () => {},
           setFocus: async () => {},
@@ -986,18 +987,32 @@ test('a window opened by tear-off shows the document it was handed', async ({ pa
     files: { 'C:\\d\\ignored.md': '# Should not be opened' },
     handoffDoc: { path: 'C:\\d\\moved.md', content: '# Moved here', saved: '# Moved here' },
   }));
-  await page.goto('/index.html?handoff=handoff-1');
+  await page.goto('/index.html');
   await expect(page).toHaveTitle(/^moved\.md - Glance/);
   await expect(page.locator('.tab')).toHaveCount(1);
   await expect(page.locator('body')).toHaveAttribute('data-view', 'read');
   await expect(page.locator('#preview h1')).toHaveText('Moved here');
 });
 
+test('a non-main window never re-reads the launch arguments', async ({ page }) => {
+  await page.addInitScript(tauriStub({
+    windowLabel: 'win-3',
+    launchFile: 'C:\\d\\original.md',
+    files: { 'C:\\d\\original.md': '# Original launch file' },
+  }));
+  await page.goto('/index.html');
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
+  await expect(page).toHaveTitle(/^Untitled/);   // argv file was not opened
+  const cmds = await page.evaluate(() =>
+    window.__TAURI_TEST__.invokes.map((i) => i[0]));
+  expect(cmds).not.toContain('launch_file_path');
+});
+
 test('a torn-off document that was dirty arrives dirty, in edit view', async ({ page }) => {
   await page.addInitScript(tauriStub({
     handoffDoc: { path: 'C:\\d\\m.md', content: 'edited', saved: 'original' },
   }));
-  await page.goto('/index.html?handoff=handoff-2');
+  await page.goto('/index.html');
   await expect(page).toHaveTitle(/^● m\.md/);
   await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
   expect(await editorValue(page)).toBe('edited');

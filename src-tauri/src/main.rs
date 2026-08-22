@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /// Files handed over by a second launch. The webview registers its `open-file`
 /// listener asynchronously, so an emit that lands during startup would be
@@ -25,9 +25,9 @@ struct HandoffDoc {
     saved: String,
 }
 
-/// Documents waiting for the window that was opened to carry them. Passing the
-/// text through the URL would break on anything large or oddly encoded, so the
-/// new window is handed a token and fetches the document over IPC.
+/// Documents waiting for the window created to carry them, keyed by that
+/// window's label. The new window redeems its own label over IPC; nothing
+/// travels in the URL, which keeps large or oddly encoded text out of it.
 #[derive(Default)]
 struct Handoffs(Mutex<HashMap<String, HandoffDoc>>);
 
@@ -101,27 +101,28 @@ fn take_pending_files(state: State<Pending>) -> Vec<String> {
 
 /// Move a document into a window of its own.
 ///
-/// Deliberately a synchronous command: Tauri runs those on the main thread,
-/// which is where a window has to be created on Windows.
+/// Async on purpose, and it matters: a synchronous command runs on the main
+/// thread, and `WebviewWindowBuilder::build()` dispatches window creation to
+/// that same thread and waits for it — from a sync command on Windows that is
+/// a deadlock that freezes every window in the app. An async command runs on
+/// a worker thread, leaving the main thread free to do the actual creating.
 #[tauri::command]
-fn open_in_new_window(
+async fn open_in_new_window(
     app: AppHandle,
     doc: HandoffDoc,
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
     let n = NEXT_WINDOW.fetch_add(1, Ordering::Relaxed);
-    let token = format!("handoff-{n}");
     let label = format!("win-{n}");
 
     app.state::<Handoffs>()
         .0
         .lock()
         .map_err(|_| "handoff store unavailable".to_string())?
-        .insert(token.clone(), doc);
+        .insert(label.clone(), doc);
 
-    let url = format!("index.html?handoff={token}");
-    let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+    let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
         .title("Glance")
         .inner_size(1080.0, 740.0)
         .min_inner_size(480.0, 320.0)
@@ -133,20 +134,20 @@ fn open_in_new_window(
         _ => builder = builder.center(),
     }
 
-    builder.build().map_err(|e| {
+    if let Err(e) = builder.build() {
         // Do not strand the document in the store if the window never appeared.
         if let Ok(mut store) = app.state::<Handoffs>().0.lock() {
-            store.remove(&token);
+            store.remove(&label);
         }
-        format!("Could not open a new window: {e}")
-    })?;
+        return Err(format!("Could not open a new window: {e}"));
+    }
     Ok(())
 }
 
-/// Claim the document this window was opened to display.
+/// Claim the document this window was opened to display, if any.
 #[tauri::command]
-fn take_handoff(state: State<Handoffs>, token: String) -> Option<HandoffDoc> {
-    state.0.lock().ok()?.remove(&token)
+fn take_handoff(window: WebviewWindow, state: State<Handoffs>) -> Option<HandoffDoc> {
+    state.0.lock().ok()?.remove(window.label())
 }
 
 fn main() {

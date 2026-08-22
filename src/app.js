@@ -21,6 +21,10 @@
     listen: (evt, handler) => (T && T.event) ? T.event.listen(evt, handler) : null,
     setTitle: (title) => { if (T) T.window.getCurrentWindow().setTitle(title).catch(() => {}); },
     currentWindow: () => T ? T.window.getCurrentWindow() : null,
+    windowLabel: () => {
+      try { return T ? T.window.getCurrentWindow().label : 'main'; }
+      catch (e) { return 'main'; }
+    },
     currentWebview: () => (T && T.webview) ? T.webview.getCurrentWebview() : null,
   };
 
@@ -1639,22 +1643,23 @@
 
   // ---------------- Startup ----------------
 
-  // A window opened by tearing off a tab carries a token instead of a file:
-  // the document, unsaved text included, is waiting for it on the Rust side.
-  const handoffToken = new URLSearchParams(location.search).get('handoff');
-
   async function init() {
     applyTheme();
 
+    // A window created by tearing off a tab has its document waiting on the
+    // Rust side under this window's label; every other window gets null back.
     let handoff = null;
-    if (handoffToken && tauri.available) {
-      try { handoff = await tauri.invoke('take_handoff', { token: handoffToken }); }
-      catch (e) { /* fall through to an empty window */ }
+    if (tauri.available) {
+      try { handoff = await tauri.invoke('take_handoff'); } catch (e) {}
     }
 
     // Seed an empty doc so there is always exactly one active document.
     docs = [makeDoc(null, '')];
     showDoc(docs[0]);
+
+    // Process arguments belong to the original window only: a torn-off window
+    // re-reading them would open the launch file a second time.
+    const isMain = !tauri.available || tauri.windowLabel() === 'main';
 
     if (handoff) {
       const d = addDoc(handoff.path, handoff.content, { focusEditor: false });
@@ -1666,23 +1671,16 @@
       setView(docDirty(d) ? 'edit' : 'read');
     } else {
       let launchPath = null;
-      if (tauri.available) {
+      if (isMain) {
         try { launchPath = await tauri.invoke('launch_file_path'); } catch (e) {}
       }
       const opened = launchPath ? await openPath(launchPath) : false;
-      if (opened) {
-        // Opened with a file (double-click in Explorer): reading is the intent.
-        setView('read');
-      } else {
-        // Blank start — or the launch file was unreadable, in which case read
-        // view would just be an empty page with the editing tools hidden.
-        setView('edit');
-      }
+      // Opened with a file (double-click in Explorer): reading is the intent.
+      // Blank start — or an unreadable launch file — begins in the editor.
+      setView(opened ? 'read' : 'edit');
 
       // Anything a second launch handed over before this script was listening.
-      // Only the window that owns the launch does this, so a torn-off window
-      // cannot steal a file meant for the original.
-      if (tauri.available) {
+      if (isMain && tauri.available) {
         try {
           const pending = await tauri.invoke('take_pending_files');
           for (const p of pending || []) await openLaunched(p);
