@@ -21,6 +21,10 @@ function tauriStub(opts) {
       listeners: {},
       askDelay: 0,
       pendingFiles: [],
+      writeDelay: 0,
+      newWindows: [],
+      newWindowFails: false,
+      handoffDoc: null,
     }, ${JSON.stringify(opts || {})});
     const T = () => window.__TAURI_TEST__;
     window.__TAURI__ = {
@@ -35,6 +39,11 @@ function tauriStub(opts) {
           }
           if (cmd === 'write_text_file') { T().files[args.path] = args.contents; return null; }
           if (cmd === 'take_pending_files') return T().pendingFiles || [];
+          if (cmd === 'take_handoff') return T().handoffDoc || null;
+          if (cmd === 'open_in_new_window') {
+            if (T().newWindowFails) throw 'Could not open a new window: denied';
+            T().newWindows.push(args); return null;
+          }
           throw new Error('unknown command ' + cmd);
         },
       },
@@ -869,4 +878,127 @@ test('files queued before the listener existed are drained at startup', async ({
   });
   await expect(page.locator('.tab')).toHaveCount(2);
   await expect(page).toHaveTitle(/^late\.md/);
+});
+
+// ---------------------------------------------------------------
+// Moving a document to its own window
+// ---------------------------------------------------------------
+
+const newWindows = (page) => page.evaluate(() => window.__TAURI_TEST__.newWindows);
+
+test('right-clicking a tab offers to move it to a new window', async ({ page }) => {
+  await boot(page, twoDocs);
+  await page.keyboard.press('Control+o');
+  await page.locator('.tab').first().click({ button: 'right' });
+  await expect(page.locator('#tabMenu')).toBeVisible();
+  await expect(page.locator('#tabMenu .menu-item').first()).toHaveText('Move to New Window');
+});
+
+test('the context menu moves the document out and closes its tab', async ({ page }) => {
+  await boot(page, twoDocs);
+  await page.keyboard.press('Control+o');
+  await page.locator('.tab').first().click({ button: 'right' });
+  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await expect(page.locator('.tab')).toHaveCount(1);
+  const wins = await newWindows(page);
+  expect(wins).toHaveLength(1);
+  expect(wins[0].doc.path).toBe('C:\\d\\a.md');
+  expect(wins[0].doc.content).toContain('AAA');
+  // The document that stayed behind is untouched.
+  expect(await editorValue(page)).toContain('BBB');
+});
+
+test('unsaved text travels to the new window', async ({ page }) => {
+  await boot(page, twoDocs);
+  await page.keyboard.press('Control+o');
+  await setEditor(page, '# BBB edited but never saved');
+  await page.locator('.tab').nth(1).click({ button: 'right' });
+  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  const wins = await newWindows(page);
+  expect(wins[0].doc.content).toBe('# BBB edited but never saved');
+  expect(wins[0].doc.saved).toContain('BBB');       // the on-disk text
+  expect(wins[0].doc.content).not.toBe(wins[0].doc.saved);  // i.e. still dirty
+});
+
+test('moving out never prompts, because nothing is being discarded', async ({ page }) => {
+  await boot(page, { ...twoDocs, askResponse: false });
+  await page.keyboard.press('Control+o');
+  await setEditor(page, 'dirty');
+  await page.locator('.tab').nth(1).click({ button: 'right' });
+  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await expect(page.locator('.tab')).toHaveCount(1);
+  expect(await page.evaluate(() => window.__TAURI_TEST__.asks.length)).toBe(0);
+});
+
+test('a lone document cannot be moved out — it already has its own window', async ({ page }) => {
+  await boot(page, { launchFile: 'C:\\d\\a.md', files: { 'C:\\d\\a.md': 'A' } });
+  await page.evaluate(() => {
+    document.body.dataset.tabs = 'many';           // reveal the strip for the test
+    document.getElementById('tabbar').hidden = false;
+  });
+  await page.locator('.tab').first().click({ button: 'right' });
+  await expect(page.locator('#tabMenu .menu-item').first()).toBeDisabled();
+});
+
+test('the tab stays put if the new window cannot be created', async ({ page }) => {
+  await boot(page, { ...twoDocs, newWindowFails: true });
+  await page.keyboard.press('Control+o');
+  await page.locator('.tab').first().click({ button: 'right' });
+  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await expect(page.locator('#toast')).toContainText('Could not open a new window');
+  await expect(page.locator('.tab')).toHaveCount(2);   // nothing lost
+});
+
+test('dragging a tab beyond the window edge moves it to a new window', async ({ page }) => {
+  await boot(page, twoDocs);
+  await page.keyboard.press('Control+o');
+  const tab = page.locator('.tab').first();
+  const box = await tab.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 40, box.y + 40, { steps: 4 });
+  // Release past the right edge of the viewport.
+  const size = page.viewportSize();
+  await page.mouse.move(size.width + 80, 200, { steps: 4 });
+  await page.mouse.up();
+  await expect(page.locator('.tab')).toHaveCount(1);
+  const wins = await newWindows(page);
+  expect(wins).toHaveLength(1);
+  expect(wins[0].doc.path).toBe('C:\\d\\a.md');
+});
+
+test('dragging a tab within the window just activates it, no new window', async ({ page }) => {
+  await boot(page, twoDocs);
+  await page.keyboard.press('Control+o');
+  const tab = page.locator('.tab').first();
+  const box = await tab.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 60, box.y + 200, { steps: 5 });  // into the document area
+  await page.mouse.up();
+  await expect(page.locator('.tab')).toHaveCount(2);
+  expect(await newWindows(page)).toHaveLength(0);
+});
+
+test('a window opened by tear-off shows the document it was handed', async ({ page }) => {
+  await page.addInitScript(tauriStub({
+    launchFile: 'C:\\d\\ignored.md',
+    files: { 'C:\\d\\ignored.md': '# Should not be opened' },
+    handoffDoc: { path: 'C:\\d\\moved.md', content: '# Moved here', saved: '# Moved here' },
+  }));
+  await page.goto('/index.html?handoff=handoff-1');
+  await expect(page).toHaveTitle(/^moved\.md - Glance/);
+  await expect(page.locator('.tab')).toHaveCount(1);
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'read');
+  await expect(page.locator('#preview h1')).toHaveText('Moved here');
+});
+
+test('a torn-off document that was dirty arrives dirty, in edit view', async ({ page }) => {
+  await page.addInitScript(tauriStub({
+    handoffDoc: { path: 'C:\\d\\m.md', content: 'edited', saved: 'original' },
+  }));
+  await page.goto('/index.html?handoff=handoff-2');
+  await expect(page).toHaveTitle(/^● m\.md/);
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
+  expect(await editorValue(page)).toBe('edited');
 });

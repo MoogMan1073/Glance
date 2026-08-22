@@ -32,6 +32,18 @@ copy of Glance.
 Middle-clicking a tab closes it. A dot in place of the × means that
 document has unsaved changes.
 
+### Moving a document to its own window
+
+Two ways, both ending in the same place:
+
+- **Right-click the tab** and choose **Move to New Window**.
+- **Drag the tab out** of the window and let go. The new window opens where
+  you dropped it.
+
+Unsaved text comes along, so there is nothing to save first and nothing to
+confirm. A window showing only one document has nothing to move out, so the
+menu item is greyed out there.
+
 ## Keyboard shortcuts
 
 ### Files

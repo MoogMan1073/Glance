@@ -447,6 +447,44 @@ body[data-view="split"] #editorPane { border-right: 1px solid var(--border); }
   flex: 1 1 auto;
 }
 
+/* ---------------- Tab context menu ---------------- */
+
+#tabMenu {
+  position: fixed;
+  z-index: 150;
+  min-width: 190px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  user-select: none;
+}
+
+#tabMenu[hidden] { display: none; }
+
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:hover:not(:disabled) { background: var(--btn-hover); }
+.menu-item:disabled { color: var(--fg-muted); cursor: default; }
+.menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+
+/* While a tab is being dragged past the window edge, say so. */
+body.detaching, body.detaching .tab { cursor: copy; }
+body.detaching .tab[data-dragging="true"] { opacity: 0.5; }
+
 /* ---------------- Toast ---------------- */
 
 #toast {

@@ -334,6 +334,35 @@
   // same document gets its own prompt and then splices a stale index.
   const closingIds = new Set();
 
+  // Removing a document from this window, once the decision to do so is made.
+  // Shared by closing a tab and moving one to its own window: the bookkeeping
+  // is identical, only the question asked beforehand differs.
+  function removeDoc(d) {
+    const idx = docs.indexOf(d);
+    if (idx === -1) return false;
+    docs.splice(idx, 1);
+
+    if (!docs.length) {
+      // Last tab gone: nothing left to show, so the window goes with it.
+      const win = tauri.currentWindow();
+      if (win) win.destroy ? win.destroy() : win.close();
+      else { addDoc(null, ''); }
+      return true;
+    }
+    if (d.id === activeId) {
+      const next = docs[Math.min(idx, docs.length - 1)];
+      activeId = null;         // force activate() past its no-op guard
+      activate(next.id);
+    } else {
+      renderTabs(false);
+      // The close button that had focus was just destroyed; without this the
+      // next keystrokes would go nowhere.
+      restoreFocus();
+    }
+    if (d.el) d.el.remove();
+    return true;
+  }
+
   async function closeDoc(id) {
     if (closingIds.has(id)) return false;
     const d = docs.find((x) => x.id === id);
@@ -351,32 +380,35 @@
       // Re-find rather than trusting an index taken before the await: if this
       // document is already gone, indexOf returns -1 and splice(-1, 1) would
       // delete an unrelated tab along with its unsaved work.
-      const idx = docs.indexOf(d);
-      if (idx === -1) return false;
-      docs.splice(idx, 1);
-
-      if (!docs.length) {
-        // Last tab closed: nothing left to show, so the window goes with it.
-        const win = tauri.currentWindow();
-        if (win) win.destroy ? win.destroy() : win.close();
-        else { addDoc(null, ''); }
-        return true;
-      }
-      if (d.id === activeId) {
-        const next = docs[Math.min(idx, docs.length - 1)];
-        activeId = null;         // force activate() past its no-op guard
-        activate(next.id);
-      } else {
-        renderTabs(false);
-        // The close button that had focus was just destroyed; without this the
-        // next keystrokes would go nowhere.
-        restoreFocus();
-      }
-      if (d.el) d.el.remove();
-      return true;
+      return removeDoc(d);
     } finally {
       closingIds.delete(id);
     }
+  }
+
+  // Move a document into a window of its own. Unsaved text travels with it, so
+  // there is nothing to confirm — the document is not being discarded, and
+  // asking "are you sure?" for a move would be noise.
+  async function detachDoc(id, screenX, screenY) {
+    if (docs.length < 2) return false;   // a lone tab already is its own window
+    const d = docs.find((x) => x.id === id);
+    if (!d || closingIds.has(id)) return false;
+    if (d.id === activeId) captureActive();
+    closingIds.add(id);
+    try {
+      await tauri.invoke('open_in_new_window', {
+        doc: { path: d.path, content: d.content, saved: d.savedContent },
+        x: typeof screenX === 'number' ? screenX : null,
+        y: typeof screenY === 'number' ? screenY : null,
+      });
+    } catch (err) {
+      showToast(String(err), true);
+      return false;
+    } finally {
+      closingIds.delete(id);
+    }
+    // Only drop it here once the new window has actually been created.
+    return removeDoc(d);
   }
 
   function cycleTab(delta) {
@@ -393,6 +425,121 @@
     if (e.target.closest('.tab-close')) closeDoc(id);
     else activate(id);
   });
+
+  // ---------------- Tab context menu ----------------
+
+  const tabMenu = document.getElementById('tabMenu');
+
+  function closeTabMenu() {
+    tabMenu.hidden = true;
+    tabMenu.textContent = '';
+  }
+
+  function openTabMenu(id, x, y) {
+    const d = docs.find((t) => t.id === id);
+    if (!d) return;
+    tabMenu.textContent = '';
+    const items = [
+      {
+        label: 'Move to New Window',
+        // A lone document already has a window to itself.
+        disabled: docs.length < 2,
+        run: () => detachDoc(id),
+      },
+      { separator: true },
+      { label: 'Close', run: () => closeDoc(id) },
+      {
+        label: 'Close Others',
+        disabled: docs.length < 2,
+        run: async () => {
+          for (const other of docs.slice()) {
+            if (other.id !== id) await closeDoc(other.id);
+          }
+        },
+      },
+    ];
+    for (const item of items) {
+      if (item.separator) {
+        const sep = document.createElement('div');
+        sep.className = 'menu-sep';
+        tabMenu.appendChild(sep);
+        continue;
+      }
+      const btn = document.createElement('button');
+      btn.className = 'menu-item';
+      btn.type = 'button';
+      btn.setAttribute('role', 'menuitem');
+      btn.textContent = item.label;
+      btn.disabled = !!item.disabled;
+      btn.addEventListener('click', () => { closeTabMenu(); item.run(); });
+      tabMenu.appendChild(btn);
+    }
+    // Place it at the cursor, nudged back inside if it would overflow.
+    tabMenu.hidden = false;
+    const rect = tabMenu.getBoundingClientRect();
+    tabMenu.style.left = Math.min(x, window.innerWidth - rect.width - 4) + 'px';
+    tabMenu.style.top = Math.min(y, window.innerHeight - rect.height - 4) + 'px';
+  }
+
+  tabbar.addEventListener('contextmenu', (e) => {
+    const tab = e.target.closest('.tab');
+    if (!tab) return;
+    e.preventDefault();   // the webview's own menu has nothing useful here
+    openTabMenu(Number(tab.dataset.id), e.clientX, e.clientY);
+  });
+
+  window.addEventListener('pointerdown', (e) => {
+    if (!tabMenu.hidden && !e.target.closest('#tabMenu')) closeTabMenu();
+  }, true);
+  window.addEventListener('blur', closeTabMenu);
+
+  // ---------------- Drag a tab out into its own window ----------------
+  // Pointer events rather than HTML5 drag-and-drop: with the pointer captured
+  // the coordinates keep arriving once the cursor leaves the window, which is
+  // exactly the gesture being detected.
+
+  let drag = null;
+
+  const outsideWindow = (e) =>
+    e.clientX < 0 || e.clientY < 0 ||
+    e.clientX > window.innerWidth || e.clientY > window.innerHeight;
+
+  function endDrag() {
+    if (drag && drag.tab) drag.tab.removeAttribute('data-dragging');
+    document.body.classList.remove('detaching');
+    drag = null;
+  }
+
+  tabbar.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('.tab-close')) return;
+    const tab = e.target.closest('.tab');
+    if (!tab || docs.length < 2) return;
+    drag = { id: Number(tab.dataset.id), x: e.clientX, y: e.clientY, tab, moved: false };
+    try { tab.setPointerCapture(e.pointerId); } catch (err) { /* capture is a nicety */ }
+  });
+
+  tabbar.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    if (!drag.moved && (Math.abs(e.clientX - drag.x) > 6 || Math.abs(e.clientY - drag.y) > 6)) {
+      drag.moved = true;
+      drag.tab.dataset.dragging = 'true';
+    }
+    if (drag.moved) document.body.classList.toggle('detaching', outsideWindow(e));
+  });
+
+  tabbar.addEventListener('pointerup', (e) => {
+    if (!drag) return;
+    const { id, moved } = drag;
+    const detach = moved && outsideWindow(e);
+    const screenX = e.screenX;
+    const screenY = e.screenY;
+    endDrag();
+    // Released outside the window: that document wants a window of its own,
+    // placed where it was dropped.
+    if (detach) detachDoc(id, screenX, screenY);
+  });
+
+  tabbar.addEventListener('pointercancel', endDrag);
 
   // Autoscroll is armed on mousedown, so suppressing it at auxclick is too
   // late — the strip scrolls horizontally and would start panning.
@@ -1112,32 +1259,55 @@
 
   // ---------------- Startup ----------------
 
+  // A window opened by tearing off a tab carries a token instead of a file:
+  // the document, unsaved text included, is waiting for it on the Rust side.
+  const handoffToken = new URLSearchParams(location.search).get('handoff');
+
   async function init() {
     applyTheme();
-    let launchPath = null;
-    if (tauri.available) {
-      try { launchPath = await tauri.invoke('launch_file_path'); } catch (e) {}
+
+    let handoff = null;
+    if (handoffToken && tauri.available) {
+      try { handoff = await tauri.invoke('take_handoff', { token: handoffToken }); }
+      catch (e) { /* fall through to an empty window */ }
     }
+
     // Seed an empty doc so there is always exactly one active document.
     docs = [makeDoc(null, '')];
     showDoc(docs[0]);
 
-    const opened = launchPath ? await openPath(launchPath) : false;
-    if (opened) {
-      // Opened with a file (double-click in Explorer): reading is the intent.
-      setView('read');
+    if (handoff) {
+      const d = addDoc(handoff.path, handoff.content, { focusEditor: false });
+      // Carry the dirty state across: the text was never saved, and the new
+      // window must know that as well as the old one did.
+      d.savedContent = handoff.saved;
+      d.el.value = handoff.content;
+      d.content = handoff.content;
+      setView(docDirty(d) ? 'edit' : 'read');
     } else {
-      // Blank start — or the launch file was unreadable, in which case read
-      // view would just be an empty page with the editing tools hidden.
-      setView('edit');
-    }
+      let launchPath = null;
+      if (tauri.available) {
+        try { launchPath = await tauri.invoke('launch_file_path'); } catch (e) {}
+      }
+      const opened = launchPath ? await openPath(launchPath) : false;
+      if (opened) {
+        // Opened with a file (double-click in Explorer): reading is the intent.
+        setView('read');
+      } else {
+        // Blank start — or the launch file was unreadable, in which case read
+        // view would just be an empty page with the editing tools hidden.
+        setView('edit');
+      }
 
-    // Anything a second launch handed over before this script was listening.
-    if (tauri.available) {
-      try {
-        const pending = await tauri.invoke('take_pending_files');
-        for (const p of pending || []) await openLaunched(p);
-      } catch (e) { /* older build without the command */ }
+      // Anything a second launch handed over before this script was listening.
+      // Only the window that owns the launch does this, so a torn-off window
+      // cannot steal a file meant for the original.
+      if (tauri.available) {
+        try {
+          const pending = await tauri.invoke('take_pending_files');
+          for (const p of pending || []) await openLaunched(p);
+        } catch (e) { /* older build without the command */ }
+      }
     }
 
     renderTabs(true);
