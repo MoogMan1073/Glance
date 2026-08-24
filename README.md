@@ -1,11 +1,9 @@
-# Glance
+<img src="assets/branding/glance-lockup.png" alt="Glance" width="360">
 
 A simple, **quick-to-launch** Windows desktop app for reading and editing
 Markdown files. Built for the gap between "too small for an Obsidian vault"
 and "too annoying to wait for VSCode": double-click a `.md` file and you're
 reading it in well under a second.
-
-![icon](src-tauri/icons/128x128.png)
 
 ## What it does
 
@@ -103,6 +101,10 @@ src/                  Frontend: plain HTML/CSS/JS, no build step
   vendor/             markdown-it + plugins, highlight.js (bundled locally)
 src-tauri/            Rust shell: file I/O commands, window, installer config
   tauri.conf.json     Window, NSIS installer, .md file associations
+  icons/              App icons, generated from assets/branding
+  installer/          NSIS header and sidebar artwork, likewise generated
+assets/branding/      Brand sources: mark, lockup, composed app icon
+scripts/make_icons.py Regenerates every icon and installer image
 tests/                Playwright tests for the frontend
 docs/                 The Markdown cheat sheet the help is based on
 ```

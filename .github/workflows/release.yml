@@ -1,0 +1,78 @@
+name: Release
+
+# Push a version tag and this builds the installer and publishes the release:
+#
+#     npm version 0.4.0 --no-git-tag-version   # or edit the versions by hand
+#     git commit -am "Release v0.4.0"
+#     git tag v0.4.0 && git push origin main --tags
+#
+# The manual trigger exists for re-running a release whose build failed, and
+# for environments where pushing tags is blocked — it creates the tag itself.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to publish, e.g. v0.4.0. Created at the current commit."
+        required: true
+
+permissions:
+  contents: write # create the release and upload the installer to it
+
+jobs:
+  release:
+    name: Build installer and publish release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag that disagrees with tauri.conf.json produces a release whose
+      # assets are named after a different version — confusing, and only
+      # noticeable after the fact. Fail here instead.
+      - name: Check the tag matches the app version
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.release_tag || github.ref_name }}"
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "tag=$tag app version=$version"
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::Tag $tag does not match version $version in src-tauri/tauri.conf.json."
+            echo "::error::Update the version (and Cargo.toml, package.json, the lockfiles) or retag."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Tauri CLI
+        run: npm ci
+
+      - name: Build app and installer
+        run: npm run build
+
+      - name: Publish release with the installer attached
+        uses: softprops/action-gh-release@v2
+        with:
+          # On a tag push this defaults to the pushed tag; a manual run names
+          # the tag and it is created at this commit.
+          tag_name: ${{ github.event.inputs.release_tag || '' }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+
+      # Kept alongside the release so a failed upload is still recoverable
+      # from the run itself.
+      - name: Upload installer as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Glance-installer
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
