@@ -116,23 +116,33 @@ async fn open_in_new_window(
     let n = NEXT_WINDOW.fetch_add(1, Ordering::Relaxed);
     let label = format!("win-{n}");
 
-    app.state::<Handoffs>()
-        .0
-        .lock()
-        .map_err(|_| "handoff store unavailable".to_string())?
-        .insert(label.clone(), doc);
-
     let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
         .title("Glance")
         .inner_size(1080.0, 740.0)
         .min_inner_size(480.0, 320.0)
         .visible(false); // the page shows itself once painted, as the first window does
 
+    // Windows declared in tauri.conf.json get the bundle icon automatically;
+    // ones built at runtime do not, and would show a blank taskbar button.
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder
+            .icon(icon)
+            .map_err(|e| format!("Could not set the window icon: {e}"))?;
+    }
+
     match (x, y) {
         // Land where the tab was dropped rather than jumping to the centre.
         (Some(x), Some(y)) => builder = builder.position(x, y),
         _ => builder = builder.center(),
     }
+
+    // Insert only once the builder is fully prepared, so an early return
+    // cannot leave a document stranded in the store.
+    app.state::<Handoffs>()
+        .0
+        .lock()
+        .map_err(|_| "handoff store unavailable".to_string())?
+        .insert(label.clone(), doc);
 
     if let Err(e) = builder.build() {
         // Do not strand the document in the store if the window never appeared.
@@ -190,6 +200,16 @@ fn main() {
         }))
         .manage(Pending::default())
         .manage(Handoffs::default())
+        .setup(|app| {
+            // Assert the icon explicitly rather than relying on the window
+            // having picked it up from the bundle.
+            if let Some(icon) = app.default_window_icon().cloned() {
+                for (_, window) in app.webview_windows() {
+                    let _ = window.set_icon(icon.clone());
+                }
+            }
+            Ok(())
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![

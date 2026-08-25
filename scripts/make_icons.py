@@ -13,6 +13,8 @@ Inverting it (white document, navy tile) keeps a recognisable silhouette at
 every size and still reads on both light and dark Windows taskbars.
 """
 
+import io
+import struct
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -64,6 +66,43 @@ def fit(art: Image.Image, box, bg) -> Image.Image:
     return canvas
 
 
+def build_ico(img: Image.Image, path: Path,
+              bmp_sizes=(16, 24, 32, 48, 64, 128), png_size=256) -> None:
+    """Write a multi-resolution .ico with the right compression per size.
+
+    An ICO entry may be a BMP (DIB) or a PNG. The shell reads both, but the
+    HICON path Windows uses for a window's taskbar button does not decode PNG
+    entries — a fully PNG icon then appears everywhere EXCEPT the taskbar.
+    So: BMP for the sizes Windows actually loads as icons, and PNG for the
+    256x256 entry, where BMP would add ~256KB to the executable for nothing.
+    """
+    entries = []
+    for size in bmp_sizes:
+        buf = io.BytesIO()
+        img.resize((size, size), Image.LANCZOS).save(
+            buf, format="ICO", sizes=[(size, size)], bitmap_format="bmp"
+        )
+        raw = buf.getvalue()
+        # Unwrap the single-entry ICO Pillow just produced and keep its blob.
+        _, _, _, _, _, bpp, length, offset = struct.unpack("<BBBBHHII", raw[6:22])
+        entries.append((size, raw[offset:offset + length], bpp))
+
+    buf = io.BytesIO()
+    img.resize((png_size, png_size), Image.LANCZOS).save(buf, format="PNG")
+    entries.append((png_size, buf.getvalue(), 32))
+
+    directory = b""
+    blobs = b""
+    offset = 6 + 16 * len(entries)
+    for size, blob, bpp in entries:
+        # A dimension byte of 0 means 256 — the format has no room for it.
+        dim = size % 256
+        directory += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, bpp, len(blob), offset)
+        offset += len(blob)
+        blobs += blob
+    path.write_bytes(struct.pack("<HHH", 0, 1, len(entries)) + directory + blobs)
+
+
 def main() -> None:
     ICONS.mkdir(parents=True, exist_ok=True)
     INSTALLER.mkdir(parents=True, exist_ok=True)
@@ -77,12 +116,7 @@ def main() -> None:
     for size, name in [(32, "32x32.png"), (128, "128x128.png"), (256, "128x128@2x.png")]:
         icon.resize((size, size), Image.LANCZOS).save(ICONS / name)
 
-    # Multi-resolution .ico: Explorer and the taskbar pick the size they need
-    # rather than downscaling a big one badly.
-    icon.resize((256, 256), Image.LANCZOS).save(
-        ICONS / "icon.ico",
-        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-    )
+    build_ico(icon, ICONS / "icon.ico")
 
     # NSIS artwork. Both must be BMP at exactly these sizes, and neither may
     # carry alpha — the installer draws them on its own background.
