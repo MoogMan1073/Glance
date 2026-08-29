@@ -7,9 +7,21 @@ double-click a `.md` and you are reading it in well under a second.
 help. This file is the standing rules — the things that are easy to break
 without noticing.
 
-**This is the one PUBLIC repository in the portfolio.** Anything committed here
-is world-readable, permanently, including in history. There are no customer
-files, no exports and no internal documents in it and it must stay that way.
+**This is one of TWO public repositories in the portfolio** — Glance and
+**Redline** (`MoogMan1073/Redline`, formerly `PDF_MarkupApp`). Anything
+committed here is world-readable, permanently, including in history. There are
+no customer files, no exports and no internal documents in it and it must stay
+that way.
+
+That line said *"the one PUBLIC repository"* until 2026-08-29, and it was
+checked against the account rather than remembered: `list_repos` reports
+`visibility` per repo, and two of the fourteen come back public. **A claim
+about which repositories are private is exactly the kind that goes stale
+silently** — nothing in a checkout knows its own visibility, so the only way to
+find out is to ask GitHub. Redline was swept at the same time and is clean: no
+drawing files, exports or archives in 172 commits, no customer names in tracked
+files, and its private-PyDRC install uses `${{ secrets.PYDRC_TOKEN }}` with no
+literal token ever committed.
 
 ## Run it
 
