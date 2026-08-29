@@ -1,6 +1,13 @@
 node_modules/
 src-tauri/target/
 src-tauri/gen/
+# Playwright output. Both paths: the config's testDir is `.` relative to
+# tests/, so a run started from there writes tests/test-results/ and a run
+# started from the repo root writes test-results/. Only the first was
+# ignored, and a stray .last-run.json saying `"status": "failed"` was
+# committed at the root and read as this project's tests failing.
 tests/test-results/
 tests/playwright-report/
+test-results/
+playwright-report/
 tests/zz-*
