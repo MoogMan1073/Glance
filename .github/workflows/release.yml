@@ -25,7 +25,7 @@ jobs:
     name: Build installer and publish release
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # A tag that disagrees with the app produces a release whose assets are
       # named after a different version — confusing, and only noticeable after
@@ -37,7 +37,7 @@ jobs:
       # CI runs on every push reads all six, and takes the tag as its argument:
       # one implementation, two callers, so the release cannot check less than
       # every push already did.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - name: The version declarations agree, and the tag agrees with them
@@ -73,7 +73,7 @@ jobs:
       # Kept alongside the release so a failed upload is still recoverable
       # from the run itself.
       - name: Upload installer as a build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Glance-installer
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
