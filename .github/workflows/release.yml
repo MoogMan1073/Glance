@@ -27,28 +27,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # A tag that disagrees with tauri.conf.json produces a release whose
-      # assets are named after a different version — confusing, and only
-      # noticeable after the fact. Fail here instead.
-      - name: Check the tag matches the app version
+      # A tag that disagrees with the app produces a release whose assets are
+      # named after a different version — confusing, and only noticeable after
+      # the fact. Fail here instead.
+      #
+      # This step used to read `tauri.conf.json` ALONE, and its own error
+      # message then told you to update "Cargo.toml, package.json, the
+      # lockfiles" — four declarations it was not looking at. The same script
+      # CI runs on every push reads all six, and takes the tag as its argument:
+      # one implementation, two callers, so the release cannot check less than
+      # every push already did.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The version declarations agree, and the tag agrees with them
         shell: bash
         run: |
-          tag="${{ github.event.inputs.release_tag || github.ref_name }}"
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          echo "tag=$tag app version=$version"
-          if [ "$tag" != "v$version" ]; then
-            echo "::error::Tag $tag does not match version $version in src-tauri/tauri.conf.json."
-            echo "::error::Update the version (and Cargo.toml, package.json, the lockfiles) or retag."
-            exit 1
-          fi
+          node scripts/check-versions.mjs "${{ github.event.inputs.release_tag || github.ref_name }}"
 
+      # Node is already set up above, for the version check that fails before
+      # any of this is worth doing.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
 
       - name: Install Tauri CLI
         run: npm ci

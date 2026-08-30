@@ -57,10 +57,16 @@ statement about the frontend and says nothing about the shell.
   **and** a check that `bundle.resources` in `src-tauri/tauri.conf.json` still
   copies all three into the installer. A repository can look fully compliant
   while every shipped binary is not.
-- **A version bumped in one place.** `package.json`, `package-lock.json`,
-  `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` (plus `Cargo.lock`)
-  all name it. The release checks the tag against `tauri.conf.json` only, so
-  the other three can drift silently.
+- **A version bumped in one place.** Five files name it at **six sites** —
+  `package.json`, `package-lock.json` twice (its root entry and
+  `packages[""]`), `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and
+  `src-tauri/Cargo.lock`'s entry for the `glance` crate.
+
+  `node scripts/check-versions.mjs` reads all six and CI runs it on **every
+  push and pull request**, so this now fails at review rather than at a tag.
+  Run it before you push. This bullet used to end *"the other three can drift
+  silently"*, which was true: the release read `tauri.conf.json` alone and
+  nothing before a tag read anything.
 - **Generated output committed.** `test-results/` and `playwright-report/` are
   Playwright's, `src-tauri/target/` is Cargo's. A `.last-run.json` reading
   `"status": "failed"` was committed at the repository root once and read, from
@@ -87,9 +93,11 @@ statement about the frontend and says nothing about the shell.
 
 ## Releases
 
-Bump the version in all four files, merge, then push a `vX.Y.Z` tag matching
-`src-tauri/tauri.conf.json`. The workflow refuses on a mismatch, because a tag
-that disagrees produces a release whose assets are named after a different
+Bump the version at all six sites — `node scripts/check-versions.mjs` prints
+them and fails until they agree — merge, then push a `vX.Y.Z` tag. The release
+runs the same script with the tag as its argument, so it refuses both a tag that
+disagrees with the app and a set of declarations that disagree with each other.
+A tag that disagrees produces a release whose assets are named after a different
 version. It can also be run manually with a `release_tag` input, for
 environments where pushing a tag is blocked — it creates the tag itself.
 

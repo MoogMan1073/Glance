@@ -17,6 +17,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The version is declared five times at six sites and only ONE of them
+      # was ever read -- by release.yml, at tag time. Everything before a tag
+      # checked none of them, so five could drift for weeks and the first sign
+      # would be a release whose installer is named after a different version
+      # than the app reports. Needs no dependencies, so it runs first.
+      - name: The version declarations agree
+        run: node scripts/check-versions.mjs
       - name: Install test dependencies
         working-directory: tests
         run: npm ci
