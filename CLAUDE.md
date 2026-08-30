@@ -53,16 +53,44 @@ Every library is **vendored into `src/vendor/`** — markdown-it and its plugins
 highlight.js and its themes. A CDN load would break offline use and put a third
 party in the path of a file the user opened locally.
 
-## Four version declarations, and the tag is a fifth
+## Six version declarations, the tag is a seventh, and one script reads them all
 
-`package.json`, `package-lock.json`, `src-tauri/tauri.conf.json` and
-`src-tauri/Cargo.toml` (plus `Cargo.lock`) each name the version. The release
-compares the **tag** against `src-tauri/tauri.conf.json` and refuses on a
-mismatch, because a tag that disagrees produces a release whose assets are
-named after a different version.
+Five files carry the version at **six sites**: `package.json`,
+`package-lock.json` twice (the root entry *and* `packages[""]`),
+`src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`'s
+own entry for the `glance` crate. The `v*` tag is a seventh that no file can see.
 
-That check reads one of the four. **Bump them together** — the workflow's own
-error message says which files to update, and it is the list to follow.
+**Until now exactly one of them was ever read.** `release.yml` compared the tag
+against `tauri.conf.json`, at tag time; `build.yml`, which runs on every push and
+pull request, checked none. So five sites could drift for weeks and the first
+sign would be a release whose installer is named after a different version than
+the app reports — the failure the tag check exists to prevent, arriving through
+the door it does not watch.
+
+The tell was in the workflow's own error message: it named *"Cargo.toml,
+package.json, the lockfiles"* as the files to update, which is four declarations
+it was not looking at. **A message that lists what a check does not check is the
+check telling you its own scope.**
+
+`scripts/check-versions.mjs` reads all six and takes the tag as an optional
+argument. **One implementation, two callers** — `build.yml` runs it bare on every
+push, `release.yml` runs it with the tag — so the release cannot check less than
+every push already did, and a second copy of *where are the versions* cannot
+disagree with the first.
+
+- **A site it cannot READ is a failure, never a skip.** *"I could not extract
+  this one"* and *"this one agrees"* must not share an outcome, which is this
+  portfolio's standing rule about a check that stops measuring rather than
+  failing. Falsified by renaming the crate in `Cargo.lock`: the run reports
+  `UNREADABLE` and exits 1.
+- **Cargo's two are found by anchor, not by first match.** The TOML version is
+  taken after the `[package]` header — the first `version =` in the file becomes
+  a dependency's the moment one is added above it — and the lockfile's is found
+  by `name = "glance"`, so a crate that happens to sort nearby cannot answer for
+  it.
+- Falsified four ways: `package.json` bumped alone, `Cargo.toml` alone,
+  `package-lock.json`'s `packages[""]` alone, and a site made unreadable. All
+  four exit 1.
 
 ## The notices have to ship INSIDE the installer
 
