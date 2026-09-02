@@ -2,7 +2,7 @@
 name = "glance"
 version = "0.4.1"
 description = "Glance — fast, minimal Markdown reader and editor"
-authors = ["DSI Innovations"]
+authors = ["DSI Innovations, LLC"]
 license = "0BSD"
 repository = "https://github.com/MoogMan1073/Glance"
 edition = "2021"
