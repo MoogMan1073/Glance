@@ -23,6 +23,17 @@ struct HandoffDoc {
     path: Option<String>,
     content: String,
     saved: String,
+    /// Why the document is read-only, when it is. A tab torn off a file that
+    /// did not read back as its own bytes must arrive read-only in its new
+    /// window too — otherwise the tear-off is a way to lose the guard.
+    ///
+    /// Spelled `read_only` on both sides deliberately. Every other field here
+    /// is one word, so there is no established camelCase convention to follow,
+    /// and a `serde(rename)` would put two spellings of one field in play —
+    /// which is how a sibling project's `element_name` arrived in JS as
+    /// `undefined` and failed silently.
+    #[serde(default)]
+    read_only: Option<String>,
 }
 
 /// Documents waiting for the window created to carry them, keyed by that
@@ -33,15 +44,82 @@ struct Handoffs(Mutex<HashMap<String, HandoffDoc>>);
 
 static NEXT_WINDOW: AtomicUsize = AtomicUsize::new(1);
 
+/// What a read produced, and whether the bytes survived it.
+///
+/// `lossy` is the whole reason this is a struct rather than a `String`. A
+/// caller that only receives the text cannot tell a faithful read from one
+/// where every invalid byte became U+FFFD — and it is the *caller* that decides
+/// whether to offer a save, which is the act that would make the loss permanent.
+#[derive(Serialize)]
+struct TextFile {
+    text: String,
+    lossy: bool,
+}
+
+/// U+FFFD, what `from_utf8_lossy` substitutes for a byte it cannot decode.
+const REPLACEMENT: char = '\u{FFFD}';
+
+/// Decode for display, and say whether anything was lost doing it.
+///
+/// Being forgiving about encoding is right for READING: a file with one stray
+/// byte should still be legible rather than refusing to open. What was never
+/// covered is writing the substitutes back over the original, which destroys
+/// the file silently and permanently — the byte is gone from disk and no undo
+/// reaches it.
+///
+/// So the tolerance stays and the fact travels with it. Detect-and-preserve
+/// (reading Latin-1 as Latin-1 and writing it back) is the better end state and
+/// is deliberately not attempted here: guessing an encoding wrong is its own
+/// way to corrupt a file, and this fix has to be one nobody can get wrong.
+fn decode_for_display(bytes: &[u8]) -> TextFile {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => TextFile { text: s.to_owned(), lossy: false },
+        Err(_) => TextFile { text: String::from_utf8_lossy(bytes).into_owned(), lossy: true },
+    }
+}
+
+/// Would writing `contents` over the bytes currently at the path destroy them?
+///
+/// Exactly the round-trip failure and nothing wider. Both halves are required:
+///
+/// * the file on disk **is not valid UTF-8**, so this app read it lossily and
+///   cannot reproduce it; and
+/// * the text about to be written **still carries a substitute**, so what would
+///   land is the lossy read rather than something the user retyped.
+///
+/// A legitimate overwrite fails neither — saving fresh text over a Latin-1 file
+/// is the user replacing a document, and the text they typed holds no U+FFFD.
+/// A document that genuinely contains a replacement character saved over a
+/// valid-UTF-8 file fails neither either. The conjunction is what keeps this a
+/// backstop rather than a rule that refuses ordinary work.
+fn write_would_destroy(existing: Option<&[u8]>, contents: &str) -> bool {
+    match existing {
+        Some(bytes) => std::str::from_utf8(bytes).is_err() && contents.contains(REPLACEMENT),
+        None => false,
+    }
+}
+
 #[tauri::command]
-fn read_text_file(path: String) -> Result<String, String> {
+fn read_text_file(path: String) -> Result<TextFile, String> {
     let bytes = fs::read(&path).map_err(|e| format!("Could not open {path}: {e}"))?;
-    // Be forgiving about encoding: replace invalid UTF-8 rather than failing.
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(decode_for_display(&bytes))
 }
 
 #[tauri::command]
 fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    // The frontend opens a lossily-read document read-only, which is where the
+    // user is told why. This is the backstop for every route that forgets:
+    // a save is the one act that makes the loss permanent, so the refusal is
+    // on the side that writes the bytes rather than only on the side that
+    // draws the banner.
+    if write_would_destroy(fs::read(&path).ok().as_deref(), &contents) {
+        return Err(format!(
+            "Refusing to save over {path}: it holds bytes that are not valid UTF-8, \
+             and this app read them as replacement characters. Saving would write \
+             those substitutes over the original and the bytes would be gone. \
+             Save a copy under a new name instead."
+        ));
+    }
     fs::write(&path, contents).map_err(|e| format!("Could not save {path}: {e}"))
 }
 
@@ -222,4 +300,90 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Glance");
+}
+
+#[cfg(test)]
+mod tests {
+    //! The first tests this crate has had, and they cover the one thing the
+    //! Playwright suite cannot reach by construction: `CLAUDE.md` records that
+    //! the suite runs against `src/` with no Tauri and no Rust, so everything
+    //! behind the bridge — including the code that decides whether a file is
+    //! about to be destroyed — was gated by nothing at all.
+    //!
+    //! Both functions under test are pure for exactly that reason. A rule that
+    //! only exists inside a `#[tauri::command]` is a rule no check can reach.
+
+    use super::*;
+
+    /// `0xE9` is `é` in Latin-1 and is not valid UTF-8 on its own. It is the
+    /// byte the row was reported with.
+    const LATIN1: &[u8] = b"caf\xE9 notes";
+
+    #[test]
+    fn valid_utf8_reads_faithfully_and_is_not_lossy() {
+        let got = decode_for_display("café notes".as_bytes());
+        assert_eq!(got.text, "café notes");
+        assert!(!got.lossy);
+    }
+
+    #[test]
+    fn an_invalid_byte_still_reads_and_says_it_was_lost() {
+        // The tolerance is deliberate: the file opens. What is new is that the
+        // caller can tell, which is what stops the substitute being written back.
+        let got = decode_for_display(LATIN1);
+        assert!(got.text.contains(REPLACEMENT), "{:?}", got.text);
+        assert!(got.lossy);
+        assert_ne!(got.text.as_bytes(), LATIN1);
+    }
+
+    #[test]
+    fn empty_is_not_lossy() {
+        // A floor for the other direction: a rule that answered `lossy` to
+        // everything would pass every assertion above and open nothing.
+        assert!(!decode_for_display(b"").lossy);
+    }
+
+    #[test]
+    fn the_destruction_case_is_refused() {
+        let read_back = decode_for_display(LATIN1).text;
+        assert!(write_would_destroy(Some(LATIN1), &read_back));
+    }
+
+    #[test]
+    fn an_ordinary_overwrite_of_a_latin1_file_is_allowed() {
+        // The user replacing the document. Their text carries no substitute, so
+        // nothing of the original is being echoed back at it — refusing here
+        // would be a rule that blocks real work, which is how a guard gets
+        // switched off.
+        assert!(!write_would_destroy(Some(LATIN1), "a completely new document"));
+    }
+
+    #[test]
+    fn a_replacement_character_over_a_valid_file_is_allowed() {
+        // Somebody writing *about* U+FFFD. The target round-trips, so there is
+        // nothing to lose.
+        let target = "# notes".as_bytes();
+        assert!(!write_would_destroy(Some(target), "the \u{FFFD} character"));
+    }
+
+    #[test]
+    fn a_new_file_is_allowed() {
+        // Save As to a path that does not exist yet: there are no bytes to
+        // destroy. `None` is a third state and not "an empty file".
+        assert!(!write_would_destroy(None, "anything \u{FFFD} at all"));
+    }
+
+    #[test]
+    fn both_halves_are_load_bearing() {
+        // Neither condition alone is the rule, asserted rather than commented:
+        // dropping either turns the guard into one that refuses ordinary saves
+        // or one that refuses nothing.
+        // Through a runtime value: rustc's `invalid_from_utf8` lint constant-
+        // folds the literal and warns that the call is trivially an error,
+        // which is true and is a warning inside an otherwise clean build —
+        // the announced-problem-in-a-green-run shape. The claim is the same.
+        let bytes = LATIN1.to_vec();
+        assert!(std::str::from_utf8(&bytes).is_err());
+        assert!(!"a completely new document".contains(REPLACEMENT));
+    }
 }

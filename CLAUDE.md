@@ -109,6 +109,95 @@ Glance's own code is **0BSD** — no attribution required, no fee. That is a
 deliberate choice rather than a reflex "MIT": MIT *requires* attribution from
 every redistributor, which is not what was wanted here.
 
+## A file with any non-UTF-8 byte was destroyed by open-then-save
+
+`read_text_file` ended `String::from_utf8_lossy(&bytes).into_owned()` under a
+comment defending exactly that: *"Be forgiving about encoding: replace invalid
+UTF-8 rather than failing."* **That comment is right, and it covers reading.**
+Nothing covered writing the replacements back over the original — so a file
+holding one `0xE9` opened as `caf\u{FFFD}`, and the next Ctrl+S put the
+substitute on disk. The byte is gone, permanently, and no undo in this app
+reaches it.
+
+**Silent destruction of a user's file was the default by accident rather than
+by choice**, which is the whole shape: nobody decided it, the tolerance was
+defensible where it was written, and the consequence lived one function away.
+
+- **The tolerance stays. What travels with it is the FACT.** `read_text_file`
+  answers `{ text, lossy }` rather than a `String`, because a caller handed
+  only the text cannot tell a faithful read from a lossy one — and the caller
+  is what decides whether to offer a save, which is the act that makes the loss
+  permanent. Refusing to open would be worse: a file with one stray byte should
+  still be legible.
+- **Detect-and-preserve is the better end state and is deliberately not
+  attempted.** Reading Latin-1 as Latin-1 and writing it back is what the file
+  deserves; guessing an encoding wrong is its own way to corrupt one, and this
+  fix had to be one nobody can get wrong. Read-only with a reason is cheaper and
+  strictly safer.
+- **Two guards, and the second is not the first restated.** The frontend opens
+  the document read-only — **on the textarea**, so it cannot become dirty in the
+  first place; a guard only at save would let somebody type for an hour and then
+  be told. `write_text_file` then refuses the write itself, which is the backstop
+  for every route that forgets, because a save is the one act that is not
+  recoverable.
+- **The backend refusal is a CONJUNCTION, and both halves keep it a backstop
+  rather than a rule that blocks real work.** The file on disk must be invalid
+  UTF-8 *and* the text being written must still carry a U+FFFD. Saving fresh
+  text over a Latin-1 file is a person replacing a document and passes; a
+  document that genuinely discusses U+FFFD saved over a valid file passes.
+  Refusing every write to a non-UTF-8 path would have been the obvious rule and
+  is the one that gets switched off.
+- **Save As is the way out, so it has to actually let go.** The document is then
+  bound to a file this app wrote and can reproduce exactly, so `readOnly` clears
+  on a successful write to a different path. A remedy that leaves the copy
+  read-only is worse than none, because it is offered.
+- **`read_only` travels with a torn-off tab**, spelled the same in Rust and JS.
+  Every other `HandoffDoc` field is one word, so there is no camelCase
+  convention to follow and a `serde(rename)` would put two spellings of one
+  field in play — which is how a sibling project's `element_name` arrived in JS
+  as `undefined` and failed silently.
+
+### The banner is ABOVE the panes, and both reasons are structural
+
+- Read view sets `#editorPane { display: none }`, and a read-only document is
+  exactly what a person reads — a banner inside that pane would be invisible in
+  the view it matters most in.
+- `#selMirror` and `#selOverlay` are positioned against `#editorPane`, the
+  overlay at `inset: 0`. Taking vertical space at the top of that pane moves the
+  textarea without moving their origin, which is a column-selection drift
+  nothing on screen would explain. Twenty-four of the suite's tests are column
+  selection.
+
+It is a strip rather than a toast because the reason has to stay on screen: a
+toast that has faded leaves an editor that silently will not accept a keystroke.
+
+### This file had no Rust tests at all, and that is why the defect could sit there
+
+`src-tauri/` is behind the Tauri bridge, which the section below says the
+Playwright suite cannot see — so the code deciding whether a file is about to be
+destroyed was gated by **nothing**. `decode_for_display` and
+`write_would_destroy` are pure for exactly that reason: a rule that only exists
+inside a `#[tauri::command]` is a rule no check can reach. Eight tests, and they
+cover both directions — an `empty_is_not_lossy` floor, because a rule answering
+"lossy" to everything would satisfy every assertion about the destruction case
+and open nothing.
+
+**`cargo test` needs GTK in this container** and fails on `gdk-3.0` without it;
+`apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev` fixes it, which is worth
+doing rather than shipping a Rust change verified by reading. The sibling
+Decant repo records the same one-line remedy.
+
+Falsified six ways, each on its own test: the lossy flag dropped in `openPath`
+(4 fail), the textarea's `readOnly` never set, the save refusal removed, Save As
+no longer clearing it, `showDoc` no longer refreshing the banner (3 fail), and
+`write_would_destroy` neutered to `false`.
+
+**And the first draft of the test stub broke the file it was in.** A comment
+inside `tauriStub`'s template literal wrote `` `{ text, lossy }` `` in backticks,
+which **ends the template literal** — and the parse error named a line thirty
+lines from the cause, reported as `No tests found`. No backticks inside that
+stub.
+
 ## Things the Playwright suite cannot see
 
 - **Anything behind the Tauri bridge** — file dialogs, saving, file
