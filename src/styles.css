@@ -549,3 +549,31 @@ body.detaching .tab[data-dragging="true"] { opacity: 0.5; }
   #main { display: block; }
   #previewPane { display: block !important; overflow: visible; }
 }
+
+/* ---------------- Read-only banner ---------------- */
+
+/* Above the panes, so it survives read view — where `#editorPane` is
+   `display: none` and a read-only document is exactly what somebody is
+   reading. It is a full-width strip rather than a toast because the reason
+   has to stay on screen: a toast that has faded leaves an editor that
+   silently will not accept a keystroke. */
+#readOnlyBanner {
+  padding: 8px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: var(--warn-bg, #fdf3d3);
+  color: var(--warn-fg, #6b4e00);
+  border-bottom: 1px solid var(--border);
+}
+
+#readOnlyBanner[hidden] { display: none; }
+
+body[data-theme="dark"] #readOnlyBanner {
+  background: var(--warn-bg-dark, #3a2f0b);
+  color: var(--warn-fg-dark, #f0d98a);
+}
+
+/* Print carries the document, never the app's chrome. */
+@media print {
+  #readOnlyBanner { display: none !important; }
+}

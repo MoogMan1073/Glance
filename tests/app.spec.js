@@ -9,6 +9,15 @@ function tauriStub(opts) {
   return `
     window.__TAURI_TEST__ = Object.assign({
       files: {},
+      // Paths whose bytes are not valid UTF-8. The backend answers a
+      // { text, lossy } object for every read, so the stub does too - a stub
+      // that returned a bare string would be answering a question the backend
+      // is never asked, which is how a fixture starts disagreeing with the
+      // thing it stands in for.
+      // (No backticks in here: this whole stub is a template literal, and one
+      // would end it - which is what the first draft did, and the parse error
+      // named a line thirty lines from the cause.)
+      lossyFiles: [],
       invokes: [],
       launchFile: null,
       askResponse: true,
@@ -35,9 +44,18 @@ function tauriStub(opts) {
           if (cmd === 'launch_file_path') return T().launchFile;
           if (cmd === 'read_text_file') {
             if (!(args.path in T().files)) throw 'Could not open ' + args.path;
-            return T().files[args.path];
+            return { text: T().files[args.path], lossy: T().lossyFiles.includes(args.path) };
           }
-          if (cmd === 'write_text_file') { T().files[args.path] = args.contents; return null; }
+          if (cmd === 'write_text_file') {
+            // The backend's backstop, in the stub: it refuses exactly the
+            // destruction case, so a frontend that lost its guard fails here
+            // rather than passing.
+            if (T().lossyFiles.includes(args.path) && args.contents.includes('\uFFFD')) {
+              throw 'Refusing to save over ' + args.path + ': it holds bytes that are not valid UTF-8.';
+            }
+            T().files[args.path] = args.contents;
+            return null;
+          }
           if (cmd === 'take_pending_files') return T().pendingFiles || [];
           if (cmd === 'take_handoff') return T().handoffDoc || null;
           if (cmd === 'open_in_new_window') {
@@ -1208,3 +1226,102 @@ test('a normal drag without Alt still selects text the usual way', async ({ page
   expect(sel).toBe('alpha');
   await expect(page.locator('#selOverlay > *')).toHaveCount(0);
 });
+
+// ---------------------------------------------------------------
+// A file whose bytes did not survive the read
+//
+// `read_text_file` used to answer a bare string, so the frontend could not
+// tell a faithful read from one where every undecodable byte had become
+// U+FFFD — and saving wrote those substitutes back over the original, which
+// destroys the file silently and permanently. The backend now answers
+// `{ text, lossy }` and refuses the write as a backstop; these are the half
+// that is reachable without Tauri, which is what the user actually meets.
+// ---------------------------------------------------------------
+
+const LOSSY_PATH = 'C:\\notes\\latin1.md';
+
+// `\uFFFD` is what the backend's lossy decode produces for the 0xE9 byte the
+// row was reported with. The stub carries the substitute rather than the raw
+// byte because that is what crosses the bridge.
+const LOSSY_TEXT = '# caf\uFFFD notes\n\nbody';
+
+function lossyOpts(extra) {
+  return Object.assign({
+    launchFile: LOSSY_PATH,
+    files: { [LOSSY_PATH]: LOSSY_TEXT },
+    lossyFiles: [LOSSY_PATH],
+  }, extra || {});
+}
+
+test('a file that did not round-trip opens read-only and says why', async ({ page }) => {
+  await boot(page, lossyOpts());
+  const banner = page.locator('#readOnlyBanner');
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText('not valid UTF-8');
+  // The textarea refuses the keystroke, so the document cannot become dirty in
+  // the first place. A guard only at save would let somebody type for an hour
+  // and then be told.
+  await expect(page.locator('#editor')).toHaveAttribute('readonly', '');
+});
+
+test('an ordinary file opens editable with no banner', async ({ page }) => {
+  // The other direction, and it is not decoration: a check that only ever saw
+  // the lossy case would pass just as well over an app that opened everything
+  // read-only.
+  await boot(page, {
+    launchFile: 'C:\\notes\\ok.md',
+    files: { 'C:\\notes\\ok.md': '# fine' },
+  });
+  await expect(page.locator('#readOnlyBanner')).toBeHidden();
+  await expect(page.locator('#editor')).not.toHaveAttribute('readonly', '');
+});
+
+test('saving a lossily-read file over itself is refused and the file is untouched',
+  async ({ page }) => {
+    await boot(page, lossyOpts());
+    await page.keyboard.press('Control+s');
+    await expect(page.locator('#toast')).toContainText('Read-only');
+    // The bytes on disk are the measurement, not the toast: a refusal that
+    // still wrote would show the same message.
+    const onDisk = await page.evaluate(
+      (p) => window.__TAURI_TEST__.files[p], LOSSY_PATH);
+    expect(onDisk).toBe(LOSSY_TEXT);
+  });
+
+test('Save As writes a copy and the copy is editable', async ({ page }) => {
+  // The way out has to actually work. A remedy that leaves the copy read-only
+  // is worse than none, because it is offered.
+  await boot(page, lossyOpts({ saveResponse: 'C:\\notes\\copy.md' }));
+  await page.keyboard.press('Control+Shift+S');
+  await expect(page.locator('#toast')).toContainText('Saved');
+  await expect(page.locator('#readOnlyBanner')).toBeHidden();
+  await expect(page.locator('#editor')).not.toHaveAttribute('readonly', '');
+  const copy = await page.evaluate(
+    () => window.__TAURI_TEST__.files['C:\\notes\\copy.md']);
+  expect(copy).toBe(LOSSY_TEXT);
+});
+
+test('the banner follows the active tab', async ({ page }) => {
+  // It is one element for every document, so a banner left over from the tab
+  // before would be a sentence about a file the user is no longer looking at.
+  await boot(page, lossyOpts({
+    files: { [LOSSY_PATH]: LOSSY_TEXT, 'C:\\notes\\ok.md': '# fine' },
+    openResponse: 'C:\\notes\\ok.md',
+  }));
+  await expect(page.locator('#readOnlyBanner')).toBeVisible();
+  await page.click('#btn-open');
+  await expect(page.locator('#readOnlyBanner')).toBeHidden();
+});
+
+test('the banner survives read view, which is where it matters most',
+  async ({ page }) => {
+    // `#editorPane` is `display: none` in read view, so a banner inside it
+    // would vanish in the one view a read-only document is normally in.
+    await boot(page, lossyOpts());
+    await page.keyboard.press('Control+1');
+    await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
+    await expect(page.locator('#readOnlyBanner')).toBeVisible();
+    await page.keyboard.press('Control+3');
+    await expect(page.locator('body')).toHaveAttribute('data-view', 'read');
+    await expect(page.locator('#readOnlyBanner')).toBeVisible();
+  });

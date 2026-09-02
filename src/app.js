@@ -40,6 +40,7 @@
   // `editor` is whichever document's textarea is on screen; activate() swaps it.
   let editor = null;
   const editorPane = document.getElementById('editorPane');
+  const readOnlyBanner = document.getElementById('readOnlyBanner');
   const preview = document.getElementById('preview');
   const previewPane = document.getElementById('previewPane');
   const helpPanel = document.getElementById('helpPanel');
@@ -64,6 +65,13 @@
   // .value. A textarea's undo stack, caret and scroll position belong to the
   // element: give every document its own and all three survive a tab switch
   // for free. Reusing one would reset undo history on every switch.
+  // Why a document opened read-only. One sentence, shown in the banner and
+  // repeated by the save refusal, so the two cannot describe it differently.
+  const LOSSY_READ =
+    'Read-only: this file contains bytes that are not valid UTF-8, and they were '
+    + 'read as \u{FFFD}. Saving would write those substitutes over the original and '
+    + 'the bytes would be gone. Use Save As to write a copy.';
+
   function createEditorEl(doc) {
     const ta = document.createElement('textarea');
     ta.className = 'editor';
@@ -72,12 +80,16 @@
     ta.setAttribute('aria-label', 'Markdown editor');
     ta.value = doc.content;
     ta.hidden = true;
+    // The textarea itself refuses the keystroke, so the document cannot become
+    // dirty in the first place — a guard only at save would let somebody type
+    // for an hour and then be told.
+    ta.readOnly = !!doc.readOnly;
     attachEditorListeners(ta);
     editorPane.appendChild(ta);
     return ta;
   }
 
-  function makeDoc(path, content) {
+  function makeDoc(path, content, readOnly) {
     const doc = {
       id: ++seq,
       path: path || null,
@@ -87,10 +99,20 @@
       previewScroll: 0,
       html: null,       // cached render; null means stale
       dirtyShown: null, // last dirty state drawn in the tab strip
+      // The REASON rather than a flag, because it is what the banner and the
+      // refusal both print. A boolean would need a second table saying why.
+      readOnly: readOnly || null,
       el: null,
     };
     doc.el = createEditorEl(doc);
     return doc;
+  }
+
+  function renderReadOnlyBanner() {
+    const d = activeDoc();
+    const reason = d && d.readOnly;
+    readOnlyBanner.textContent = reason || '';
+    readOnlyBanner.hidden = !reason;
   }
 
   const activeDoc = () => docs.find((d) => d.id === activeId) || null;
@@ -285,6 +307,10 @@
     editor = d.el;
     editor.hidden = false;
     editor.id = 'editor';   // the active textarea always carries the id
+    // Here rather than in each caller: every route that changes which document
+    // is on screen goes through showDoc, and a banner left over from the tab
+    // before would be a sentence about a file the user is no longer looking at.
+    renderReadOnlyBanner();
   }
 
   function activate(id, focusEditor) {
@@ -316,7 +342,7 @@
       return existing;
     }
     captureActive();
-    const doc = makeDoc(path, content);
+    const doc = makeDoc(path, content, opts.readOnly);
     const cur = activeDoc();
     if (opts.replaceDisposable !== false && isDisposable(cur)) {
       docs.splice(docs.indexOf(cur), 1);
@@ -402,7 +428,11 @@
     closingIds.add(id);
     try {
       await tauri.invoke('open_in_new_window', {
-        doc: { path: d.path, content: d.content, saved: d.savedContent },
+        // read_only travels too. A torn-off tab that arrived editable would
+        // let somebody type into a document this app cannot write back, and
+        // the only thing left to catch it would be the backend refusal at
+        // save — which is the backstop, not the explanation.
+        doc: { path: d.path, content: d.content, saved: d.savedContent, read_only: d.readOnly },
         x: typeof screenX === 'number' ? screenX : null,
         y: typeof screenY === 'number' ? screenY : null,
       });
@@ -1204,8 +1234,12 @@
       return true;
     }
     try {
-      const content = await tauri.invoke('read_text_file', { path });
-      addDoc(path, content, options);
+      // The backend answers `{ text, lossy }` rather than a string, because a
+      // caller handed only the text cannot tell a faithful read from one where
+      // every undecodable byte became U+FFFD — and the caller is what decides
+      // whether to offer a save, which is the act that makes the loss permanent.
+      const file = await tauri.invoke('read_text_file', { path });
+      addDoc(path, file.text, { ...(options || {}), readOnly: file.lossy ? LOSSY_READ : null });
       return true;
     } catch (err) {
       showToast(String(err), true);
@@ -1234,6 +1268,14 @@
   async function writeTo(path) {
     const d = activeDoc();
     if (!d) return false;
+    // A read-only document may still be written — to a DIFFERENT path. That is
+    // the whole route out: Save As writes the text this app can represent to a
+    // new file and leaves the original's bytes where they are. Refusing the act
+    // outright would leave the user with no way to keep their work.
+    if (d.readOnly && path === d.path) {
+      showToast(d.readOnly, true);
+      return false;
+    }
     const other = docs.find((x) => x !== d && x.path === path);
     if (other) {
       // Two tabs bound to one file would let the stale one silently overwrite
@@ -1248,6 +1290,16 @@
       await tauri.invoke('write_text_file', { path, contents });
       const pathChanged = d.path !== path;
       d.path = path;
+      // Save As is the way out, so it has to actually let go. The document is
+      // now bound to a file this app wrote and can reproduce exactly; leaving
+      // it read-only would hand the user a copy they still cannot edit, which
+      // is a remedy that does not work — worse than none, because it is
+      // offered.
+      if (d.readOnly) {
+        d.readOnly = null;
+        d.el.readOnly = false;
+        renderReadOnlyBanner();
+      }
       // Only savedContent takes the snapshot. Assigning it to d.content too
       // would roll the document back over anything typed during the write.
       d.savedContent = contents;
@@ -1662,7 +1714,8 @@
     const isMain = !tauri.available || tauri.windowLabel() === 'main';
 
     if (handoff) {
-      const d = addDoc(handoff.path, handoff.content, { focusEditor: false });
+      const d = addDoc(handoff.path, handoff.content,
+                       { focusEditor: false, readOnly: handoff.read_only || null });
       // Carry the dirty state across: the text was never saved, and the new
       // window must know that as well as the old one did.
       d.savedContent = handoff.saved;

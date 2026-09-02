@@ -109,6 +109,23 @@
 
   <nav id="tabbar" role="tablist" aria-label="Open documents"></nav>
 
+  <!-- Why the active document cannot be edited. ABOVE the panes rather than
+       inside the editor one, for two reasons that are both about where it has
+       to be seen and what it must not disturb:
+
+       * read view sets `#editorPane { display: none }`, and a read-only
+         document is exactly what a person reads — a banner in there would be
+         invisible in the view it matters most in;
+       * `#selMirror` and `#selOverlay` are positioned against `#editorPane`,
+         with the overlay at `inset: 0`. Taking vertical space at the top of
+         that pane moves the textarea without moving their origin, which is a
+         column-selection drift nothing on screen would explain.
+
+       Empty and hidden for every file that read back as its own bytes, which
+       is nearly all of them: a banner that is always there is one nobody
+       reads. -->
+  <div id="readOnlyBanner" role="status" hidden></div>
+
   <main id="main">
     <!-- One textarea per open document, created by app.js. Each keeps its own
          native undo stack and scroll position; the active one carries id="editor". -->
