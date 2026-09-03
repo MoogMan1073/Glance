@@ -72,6 +72,20 @@
     + 'read as \u{FFFD}. Saving would write those substitutes over the original and '
     + 'the bytes would be gone. Use Save As to write a copy.';
 
+  // The second reason a document opens read-only, and it is the same shape as
+  // the first: what this app can hold is not what the file contains.
+  //
+  // A `<textarea>` normalises its value to LF — measured, `ta.value = 'a\r\nb'`
+  // reads back `'a\nb'` — so the editor cannot represent a file that mixes CRLF
+  // and LF. The backend records a uniform ending and restores it on write, which
+  // is byte-exact; a MIXED file has no ending to restore, and picking the
+  // majority would rewrite the minority in silence. That is the defect being
+  // fixed wearing a smaller number, so it is refused rather than guessed.
+  const MIXED_EOL =
+    'Read-only: this file mixes CRLF and LF line endings, and a text box can '
+    + 'only hold one of them. Saving would rewrite every line ending in the '
+    + 'file. Use Save As to write a copy.';
+
   function createEditorEl(doc) {
     const ta = document.createElement('textarea');
     ta.className = 'editor';
@@ -89,12 +103,18 @@
     return ta;
   }
 
-  function makeDoc(path, content, readOnly) {
+  function makeDoc(path, content, readOnly, enc) {
+    const e = enc || {};
     const doc = {
       id: ++seq,
       path: path || null,
       content: content || '',
       savedContent: content || '',
+      // What the FILE had and the editor cannot hold, restored at the write so
+      // an untouched document is byte-identical on disk. A new document has
+      // neither, which is what this app produces on its own.
+      bom: !!e.bom,
+      eol: e.eol || 'lf',
       editorScroll: 0,
       previewScroll: 0,
       html: null,       // cached render; null means stale
@@ -342,7 +362,7 @@
       return existing;
     }
     captureActive();
-    const doc = makeDoc(path, content, opts.readOnly);
+    const doc = makeDoc(path, content, opts.readOnly, opts);
     const cur = activeDoc();
     if (opts.replaceDisposable !== false && isDisposable(cur)) {
       docs.splice(docs.indexOf(cur), 1);
@@ -432,7 +452,16 @@
         // let somebody type into a document this app cannot write back, and
         // the only thing left to catch it would be the backend refusal at
         // save — which is the backstop, not the explanation.
-        doc: { path: d.path, content: d.content, saved: d.savedContent, read_only: d.readOnly },
+        //
+        // So do `bom` and `eol`, for the narrower reason that they are facts
+        // about the FILE rather than about the tab: a CRLF document torn into
+        // a new window and saved there would have every line ending rewritten,
+        // which is the defect this pair was added to fix, surviving in the one
+        // path that rebuilds a document from scratch.
+        doc: {
+          path: d.path, content: d.content, saved: d.savedContent,
+          read_only: d.readOnly, bom: d.bom, eol: d.eol,
+        },
         x: typeof screenX === 'number' ? screenX : null,
         y: typeof screenY === 'number' ? screenY : null,
       });
@@ -1239,7 +1268,20 @@
       // every undecodable byte became U+FFFD — and the caller is what decides
       // whether to offer a save, which is the act that makes the loss permanent.
       const file = await tauri.invoke('read_text_file', { path });
-      addDoc(path, file.text, { ...(options || {}), readOnly: file.lossy ? LOSSY_READ : null });
+      // `bom` and `eol` are what the file had and the editor cannot hold: a BOM
+      // is valid UTF-8 and reached markdown-it, where it sat in front of the
+      // first `#` and stopped it being a heading; a textarea flattens CRLF to
+      // LF, so a CRLF file was DIRTY THE MOMENT ANYTHING READ THE EDITOR BACK
+      // and a save rewrote every line ending. Both are stripped for display and
+      // carried here so the write can put them back, which is the same
+      // arrangement as `lossy` — the tolerance stays and the fact travels.
+      const reason = file.lossy ? LOSSY_READ : (file.eol === 'mixed' ? MIXED_EOL : null);
+      addDoc(path, file.text, {
+        ...(options || {}),
+        readOnly: reason,
+        bom: !!file.bom,
+        eol: file.eol || 'lf',
+      });
       return true;
     } catch (err) {
       showToast(String(err), true);
@@ -1287,9 +1329,21 @@
     // be marked as saved.
     const contents = editor.value;
     try {
-      await tauri.invoke('write_text_file', { path, contents });
+      // Save As writes to a DIFFERENT file, and inheriting the source's BOM
+      // and line endings there would silently give the new file an encoding
+      // the user never chose. The document adopts them only because it is now
+      // bound to that path, which is the same reasoning that clears readOnly
+      // a few lines down: after this write, this app can reproduce the file.
+      const pathIsSame = d.path === path;
+      const bom = pathIsSame ? d.bom : false;
+      const eol = pathIsSame ? d.eol : 'lf';
+      await tauri.invoke('write_text_file', { path, contents, bom, eol });
       const pathChanged = d.path !== path;
       d.path = path;
+      // Adopt what was actually written, so the next save round-trips this
+      // file rather than the one it came from.
+      d.bom = bom;
+      d.eol = eol;
       // Save As is the way out, so it has to actually let go. The document is
       // now bound to a file this app wrote and can reproduce exactly; leaving
       // it read-only would hand the user a copy they still cannot edit, which
@@ -1715,7 +1769,8 @@
 
     if (handoff) {
       const d = addDoc(handoff.path, handoff.content,
-                       { focusEditor: false, readOnly: handoff.read_only || null });
+                       { focusEditor: false, readOnly: handoff.read_only || null,
+                         bom: !!handoff.bom, eol: handoff.eol || 'lf' });
       // Carry the dirty state across: the text was never saved, and the new
       // window must know that as well as the old one did.
       d.savedContent = handoff.saved;

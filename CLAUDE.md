@@ -26,10 +26,18 @@ literal token ever committed.
 ## Run it
 
 ```bash
-cd tests && npm ci && npx playwright test     # 85 tests
+cd tests && npm ci && npx playwright test      # the frontend suite
+cargo test --manifest-path src-tauri/Cargo.toml # the Rust half (needs GTK, below)
 npm run dev                                    # the app (needs Rust + WebView2)
 npm run build                                  # installer + portable exe (Windows)
 ```
+
+That first line carried `# 85 tests` and it was **100** when somebody next ran
+it. Nothing reads that number, so nothing turns red when it stops being true —
+and it sat two paragraphs above the sentence saying the workflow *"is the
+authority"*. Removed rather than restamped, which is the answer four sibling
+repos reached on the same day: a number merely updated is wrong again the week
+after, and the runner prints the current one.
 
 The Playwright suite runs against `tests/server.mjs`, a static server over
 `src/` — **no Tauri, no Rust, no Windows**. That is what makes the frontend
@@ -197,6 +205,103 @@ inside `tauriStub`'s template literal wrote `` `{ text, lossy }` `` in backticks
 which **ends the template literal** — and the parse error named a line thirty
 lines from the cause, reported as `No tests found`. No backticks inside that
 stub.
+
+## Two more facts the file had and the editor could not hold
+
+The section above is about a read that *loses* something. These two lose
+nothing on the way in — both decode faithfully — and are then written over,
+because **what a `<textarea>` can hold is narrower than what a file
+contains**. Same shape, one level down, and the same answer: strip it for
+display, report it, put it back on write.
+
+- **A BOM is valid UTF-8**, so it reached markdown-it, where it sits in front
+  of the first `#` and stops it being a heading. Measured in a real browser
+  before anything was changed: `render("﻿# Title\n\ntext")` gives
+  `<p>﻿# Title</p>` and the same string without it gives `<h1>Title</h1>`.
+  **The first heading of every BOM'd file rendered as body text**, and nothing
+  was wrong with the read.
+- **A textarea normalises its value to LF.** Measured: `ta.value = "a\r\nb"`
+  reads back `"a\nb"`. So a CRLF file **opened dirty** — `d.content` came back
+  from the editor as LF against a `savedContent` that was CRLF — and Ctrl+S
+  wrote LF over every line ending in the file.
+
+`read_text_file` answers `{ text, lossy, bom, eol }`; `write_text_file` takes
+`bom` and `eol` back and restores them before it writes a byte.
+
+- **`"mixed"` is a third answer rather than a guess**, and it is the whole
+  reason `eol` is not a bool. Restoring a dominant ending over a file that
+  genuinely mixes them rewrites the minority in silence — the defect being
+  fixed, wearing a smaller number. Those open read-only with a reason, exactly
+  as a lossy read does, and Save As is the way out. The backend refuses that
+  write too, and refuses it **before** composing anything, because a refusal
+  after the work is a refusal that first made somebody wait for it.
+- **The refusal is keyed on what the READ reported, never on the file.**
+  `eol == "mixed"` can only come from a caller writing back a file this app
+  flattened; *"the file on disk is mixed"* would refuse a person deliberately
+  replacing such a file, which is the over-broad rule `write_would_destroy`'s
+  conjunction already declines to be.
+- **A lone `\r` is not a line ending.** No textarea and no markdown renderer
+  treats one as a break, so calling a file that contains one CRLF or LF would
+  invent a fact about it. A file whose only breaks are lone `\r` reads `"lf"`
+  and has no `\n` to restore, which changes no byte.
+- **Save As does not inherit the source's encoding.** It writes a *different*
+  file, and giving that one a BOM and CRLF the user never chose is the same
+  silent rewrite pointed at a new path. The document then **adopts what was
+  actually written**, so the next save round-trips this file rather than the
+  one it came from — the same reasoning that clears `readOnly` there.
+- **Both travel with a torn-off tab**, like `read_only`, and for a sharper
+  reason: `open_in_new_window` rebuilds the document from scratch, so a CRLF
+  file torn off and saved in the new window would have every ending rewritten
+  — this defect surviving in the one path that starts over.
+- **Both default to "no" in the backend**, so a caller that passes neither — a
+  new document, or any route added later — writes plain LF with no BOM, which
+  is what this app produces on its own.
+
+### It was verified by running it, which is what the section below asks for
+
+`cargo build`, `cargo test` (16) and 100 Playwright tests are three green
+ticks over three things that are not the application. So the built binary was
+launched under Xvfb with a real BOM + CRLF file as `argv`, driven with
+`xdotool`, and the bytes read back off disk:
+
+| | on open | after typing and Ctrl+S |
+|---|---|---|
+| before | `● bomcrlf.md - Glance` — **dirty with nothing typed** | `EF BB BF … \n … \n … \n ZZZ` |
+| after | `bomcrlf.md - Glance` | `EF BB BF … \r\n … \r\n … \r\n ZZZ` |
+
+The typed `ZZZ` is what makes the second column a measurement rather than a
+tautology: a save that never fired leaves the file unchanged too.
+
+**The first window was the wrong window.** `xdotool search --pid` returns two
+toplevels and the first is named `glance` — the process, not the document — so
+the first reading said the title had never been set. The real one is found by
+its `_NET_WM_NAME`, which is Decant's own recorded rule for the same script.
+
+### Falsified, each arm on its own defect
+
+Rust, six ways: the BOM strip removed (2), the CRLF flatten removed (2),
+`eol_of` blinded to a bare LF (1), the BOM never restored (1), CRLF never
+restored (2), and — the floor — CRLF restored **unconditionally**, which fails
+`a_caller_that_passes_nothing_writes_plain_lf`.
+
+Frontend, six ways: `openPath` dropping the pair (3 fail), Save As inheriting
+the source encoding (1), the `mixed` reason dropped (1), the handoff dropping
+the pair on the *receiving* side (1), the document not adopting what was
+written (1), and the floor again — `bom: true, eol: 'crlf'` unconditionally,
+which fails **8**, five of them tests that predate this change.
+
+**Three of those injections would not apply and said so.** Each rewrite
+asserts its anchor changed the file, because an injection that does not apply
+reads exactly like a dead gate — and the first three attempts here were
+mangled escaping rather than a check that did not fire.
+
+### The stub decodes the way the backend does, and its files hold RAW text
+
+`tauriStub`'s `files` are what is *on disk*, BOM and CRLF included, and the
+stubbed `read_text_file` strips and flattens exactly as Rust does. A stub that
+stored the display text could never be asked the byte question, which is the
+whole claim these tests make — the same rule that already made it answer
+`{ text, lossy }` rather than a bare string.
 
 ## Things the Playwright suite cannot see
 

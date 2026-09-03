@@ -44,16 +44,37 @@ function tauriStub(opts) {
           if (cmd === 'launch_file_path') return T().launchFile;
           if (cmd === 'read_text_file') {
             if (!(args.path in T().files)) throw 'Could not open ' + args.path;
-            return { text: T().files[args.path], lossy: T().lossyFiles.includes(args.path) };
+            // files hold RAW text - what is on disk, BOM and CRLF included -
+            // and this decodes it the way the backend does: strip the BOM,
+            // flatten CRLF, report both so the write can put them back. A stub
+            // that stored the DISPLAY text instead could never be asked the
+            // byte question, which is the whole claim these two facts make.
+            var raw = T().files[args.path];
+            var bom = raw.charCodeAt(0) === 0xFEFF;
+            var body = bom ? raw.slice(1) : raw;
+            var crlf = body.split('\\r\\n').length - 1;
+            var lf = (body.split('\\n').length - 1) - crlf;
+            return {
+              text: body.split('\\r\\n').join('\\n'),
+              lossy: T().lossyFiles.includes(args.path),
+              bom: bom,
+              eol: crlf === 0 ? 'lf' : (lf === 0 ? 'crlf' : 'mixed'),
+            };
           }
           if (cmd === 'write_text_file') {
-            // The backend's backstop, in the stub: it refuses exactly the
-            // destruction case, so a frontend that lost its guard fails here
+            // The backend's backstops, in the stub: it refuses exactly the two
+            // cases it refuses, so a frontend that lost either guard fails here
             // rather than passing.
+            if (args.eol === 'mixed') {
+              throw 'Refusing to save over ' + args.path + ': it mixes CRLF and LF line endings.';
+            }
             if (T().lossyFiles.includes(args.path) && args.contents.includes('\uFFFD')) {
               throw 'Refusing to save over ' + args.path + ': it holds bytes that are not valid UTF-8.';
             }
-            T().files[args.path] = args.contents;
+            var out = args.eol === 'crlf'
+              ? args.contents.split('\\r\\n').join('\\n').split('\\n').join('\\r\\n')
+              : args.contents;
+            T().files[args.path] = (args.bom ? '\uFEFF' : '') + out;
             return null;
           }
           if (cmd === 'take_pending_files') return T().pendingFiles || [];
@@ -1324,4 +1345,189 @@ test('the banner survives read view, which is where it matters most',
     await page.keyboard.press('Control+3');
     await expect(page.locator('body')).toHaveAttribute('data-view', 'read');
     await expect(page.locator('#readOnlyBanner')).toBeVisible();
+  });
+
+// ---------------------------------------------------------------
+// What the FILE has and the editor cannot hold
+//
+// Two more facts that survive the read and then get written over, and they
+// are the same shape as `lossy` one level down: nothing is lost decoding, and
+// what the editor can *hold* is narrower than what the file *contains*.
+//
+//   * A **BOM is valid UTF-8**, so it decoded faithfully and reached
+//     markdown-it, where it sits in front of the first `#` and stops it being
+//     a heading. Measured in a real browser:
+//     `render('\uFEFF# Title')` gives `<p>\uFEFF# Title</p>` where the same
+//     string without it gives `<h1>Title</h1>`.
+//   * A **`<textarea>` normalises its value to LF** — measured,
+//     `ta.value = 'a\r\nb'` reads back `'a\nb'` — so a CRLF file differed
+//     from its own saved baseline the moment anything read the editor back,
+//     and Ctrl+S wrote LF over every line ending in the file.
+//
+// So both are stripped for display and *reported*, and the write puts them
+// back. The stub decodes and re-encodes exactly as the backend does, and its
+// `files` hold RAW text, which is what makes the byte assertions below
+// assertions about bytes rather than about the app's own idea of the text.
+// ---------------------------------------------------------------
+
+const BOM = '\uFEFF';
+const BOM_PATH = 'C:\\notes\\bom.md';
+const CRLF_PATH = 'C:\\notes\\crlf.md';
+const MIXED_PATH = 'C:\\notes\\mixed.md';
+
+const raw = (page, p) => page.evaluate((x) => window.__TAURI_TEST__.files[x], p);
+
+test('a BOM never reaches the editor, and the first heading is a heading',
+  async ({ page }) => {
+    await boot(page, {
+      launchFile: BOM_PATH,
+      files: { [BOM_PATH]: BOM + '# Title\n\ntext' },
+    });
+    // The reported defect, and it is about the RENDER rather than the text:
+    // nothing was wrong with the read.
+    await page.keyboard.press('Control+2');
+    await expect(page.locator('#preview h1')).toHaveText('Title');
+    // And the editor never holds it either, so a user cannot delete a
+    // character they cannot see.
+    expect(await page.inputValue('#editor')).toBe('# Title\n\ntext');
+  });
+
+test('an untouched BOM file is byte-identical after a save', async ({ page }) => {
+  // The other half: stripping it for display and then not putting it back is
+  // the same silent rewrite, wearing one character.
+  await boot(page, {
+    launchFile: BOM_PATH,
+    files: { [BOM_PATH]: BOM + '# Title\n\ntext' },
+  });
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('#toast')).toContainText('Saved');
+  expect(await raw(page, BOM_PATH)).toBe(BOM + '# Title\n\ntext');
+});
+
+test('a CRLF file opens clean and stays clean when the view changes',
+  async ({ page }) => {
+    // `setView` calls `captureActive`, which does `d.content = editor.value`
+    // — the flattened text. Before the fix that made the document differ from
+    // its own baseline with nothing typed, so the tab showed a dirty dot and
+    // closing it asked to save.
+    await boot(page, {
+      launchFile: CRLF_PATH,
+      files: { [CRLF_PATH]: '# A\r\n\r\nbody\r\n' },
+    });
+    await expect(page.locator('.tab').first()).toHaveAttribute('data-dirty', 'false');
+    await page.keyboard.press('Control+3');
+    await page.keyboard.press('Control+1');
+    await expect(page).not.toHaveTitle(/^● /);
+    await expect(page.locator('.tab').first()).toHaveAttribute('data-dirty', 'false');
+  });
+
+test('saving a CRLF file leaves every line ending as it was', async ({ page }) => {
+  await boot(page, {
+    launchFile: CRLF_PATH,
+    files: { [CRLF_PATH]: '# A\r\n\r\nbody\r\n' },
+  });
+  await setEditor(page, '# A\n\nbody\nmore\n');
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('#toast')).toContainText('Saved');
+  // The edit lands and everything around it keeps the file's own spelling —
+  // the added line included, because the ending is the FILE's rather than the
+  // line's.
+  expect(await raw(page, CRLF_PATH)).toBe('# A\r\n\r\nbody\r\nmore\r\n');
+});
+
+test('a file that mixes CRLF and LF opens read-only and says why',
+  async ({ page }) => {
+    // A third answer rather than a guess. Restoring a dominant ending over a
+    // file that genuinely mixes them rewrites the minority in silence, which
+    // is this defect wearing a smaller number.
+    await boot(page, {
+      launchFile: MIXED_PATH,
+      files: { [MIXED_PATH]: '# A\r\n\nbody\r\n' },
+    });
+    const banner = page.locator('#readOnlyBanner');
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText('mixes CRLF and LF');
+    await expect(page.locator('#editor')).toHaveAttribute('readonly', '');
+    await page.keyboard.press('Control+s');
+    await expect(page.locator('#toast')).toContainText('Read-only');
+    expect(await raw(page, MIXED_PATH)).toBe('# A\r\n\nbody\r\n');
+  });
+
+test('Save As does not give the copy the original file\u2019s encoding',
+  async ({ page }) => {
+    // Save As writes a DIFFERENT file. Inheriting the source's BOM and line
+    // endings there would hand the new file an encoding the user never chose
+    // — and it is the same reasoning that clears `readOnly` on the way out:
+    // after this write, the document is bound to a file this app produced.
+    await boot(page, {
+      launchFile: BOM_PATH,
+      files: { [BOM_PATH]: BOM + '# Title\r\n\r\ntext\r\n' },
+      saveResponse: 'C:\\notes\\copy.md',
+    });
+    await page.keyboard.press('Control+Shift+S');
+    await expect(page.locator('#toast')).toContainText('Saved');
+    expect(await raw(page, 'C:\\notes\\copy.md')).toBe('# Title\n\ntext\n');
+    // ...and the original is not touched on the way past.
+    expect(await raw(page, BOM_PATH)).toBe(BOM + '# Title\r\n\r\ntext\r\n');
+    // The document adopted what was actually written, so the NEXT save
+    // round-trips this file rather than the one it came from.
+    await setEditor(page, '# Title\n\nmore\n');
+    await page.keyboard.press('Control+s');
+    await expect(page.locator('#toast')).toContainText('Saved');
+    expect(await raw(page, 'C:\\notes\\copy.md')).toBe('# Title\n\nmore\n');
+  });
+
+test('a plain LF file with no BOM gets neither of them back', async ({ page }) => {
+  // The floor. Every assertion above is satisfied by a write that adds a BOM
+  // and CRLF unconditionally — which would corrupt every ordinary file in
+  // exactly the way this pair exists to prevent, in the opposite direction.
+  await boot(page, {
+    launchFile: 'C:\\notes\\plain.md',
+    files: { 'C:\\notes\\plain.md': '# A\nbody\n' },
+  });
+  await expect(page.locator('#readOnlyBanner')).toBeHidden();
+  await setEditor(page, '# A\nbody\nmore\n');
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('#toast')).toContainText('Saved');
+  const out = await raw(page, 'C:\\notes\\plain.md');
+  expect(out).toBe('# A\nbody\nmore\n');
+  expect(out.charCodeAt(0)).not.toBe(0xFEFF);
+});
+
+test('a torn-off tab carries the encoding with it', async ({ page }) => {
+  // `open_in_new_window` rebuilds the document from scratch in the receiving
+  // window, so anything not on the payload is lost — and a CRLF document torn
+  // off and saved there would have every line ending rewritten, which is this
+  // defect surviving in the one path that starts over.
+  await boot(page, {
+    launchFile: CRLF_PATH,
+    files: { [CRLF_PATH]: '# A\r\n\r\nbody\r\n', 'C:\\notes\\other.md': '# other' },
+    openResponse: 'C:\\notes\\other.md',
+  });
+  // A lone document cannot be moved out, so give it company first.
+  await page.keyboard.press('Control+o');
+  await page.locator('.tab').first().click({ button: 'right' });
+  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  const wins = await newWindows(page);
+  expect(wins).toHaveLength(1);
+  expect(wins[0].doc.eol).toBe('crlf');
+  expect(wins[0].doc.bom).toBe(false);
+});
+
+test('a torn-off tab can be saved in the new window without rewriting the file',
+  async ({ page }) => {
+    // The receiving half, which is the one that would actually cost the bytes:
+    // a payload that carried the pair and an `addDoc` that dropped it reads
+    // exactly the same from the sending side.
+    await boot(page, {
+      windowLabel: 'doc-2',
+      files: { [CRLF_PATH]: '# A\r\n\r\nbody\r\n' },
+      handoffDoc: {
+        path: CRLF_PATH, content: '# A\n\nbody\n', saved: '# A\n\nbody\n',
+        read_only: null, bom: false, eol: 'crlf',
+      },
+    });
+    await page.keyboard.press('Control+s');
+    await expect(page.locator('#toast')).toContainText('Saved');
+    expect(await raw(page, CRLF_PATH)).toBe('# A\r\n\r\nbody\r\n');
   });
