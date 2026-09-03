@@ -24,6 +24,15 @@ jobs:
       # than the app reports. Needs no dependencies, so it runs first.
       - name: The version declarations agree
         run: node scripts/check-versions.mjs
+      # The licensing invariant, which CLAUDE.md calls invisible from inside
+      # the repository: a file added to src/vendor/ ships in the installer the
+      # moment it is committed (`frontendDist` is `../src`), and MIT, ISC and
+      # the BSD licenses require the notice to travel with the DISTRIBUTED
+      # form. A repository can look fully compliant while every shipped binary
+      # is not. Needs no dependencies either, so it runs beside the version
+      # check rather than waiting for a release.
+      - name: The notices cover what ships, and ship with it
+        run: node scripts/check-notices.mjs
       - name: Install test dependencies
         working-directory: tests
         run: npm ci
@@ -48,6 +57,31 @@ jobs:
           node-version: 22
       - name: Install Tauri CLI
         run: npm ci
+      # `npm run build` succeeding was the Rust shell's ONLY gate: a compile,
+      # nothing more. It says nothing about whether the code is right, and the
+      # functions deciding whether a file is about to be destroyed on save --
+      # `decode_for_display`, `write_would_destroy`, `reapply_encoding` -- are
+      # pure precisely so something can ask.
+      #
+      # These run HERE rather than in a job of their own: the toolchain, the
+      # cache and the platform dependencies are already set up on this runner,
+      # and a second job would compile the tree twice for no extra signal.
+      # They run BEFORE the build so a lint failure is reported as a lint
+      # failure rather than as a build that fell over.
+      #
+      # Windows-only, deliberately, and the reason is written down so nobody
+      # "fixes" the asymmetry: this is the platform the app ships on, and
+      # `cargo test` on ubuntu needs the GTK/WebKit stack installed for a
+      # target nothing here builds for.
+      - name: Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+      - name: Rust lints
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test
       - name: Build app and installer
         run: npm run build
       - name: Upload installer

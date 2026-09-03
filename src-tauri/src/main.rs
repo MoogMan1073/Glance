@@ -127,7 +127,12 @@ fn decode_for_display(bytes: &[u8]) -> TextFile {
     // LF in the editor whatever the file used, because a textarea gives no
     // choice. `eol` is what puts it back.
     let text = text.replace("\r\n", "\n");
-    TextFile { text, lossy, bom, eol }
+    TextFile {
+        text,
+        lossy,
+        bom,
+        eol,
+    }
 }
 
 /// `"crlf"`, `"lf"` or `"mixed"` — what this text's line endings are.
@@ -160,7 +165,11 @@ fn reapply_encoding(contents: &str, bom: bool, eol: &str) -> String {
     } else {
         contents.to_owned()
     };
-    if bom { format!("{BOM}{body}") } else { body }
+    if bom {
+        format!("{BOM}{body}")
+    } else {
+        body
+    }
 }
 
 /// Would writing `contents` over the bytes currently at the path destroy them?
@@ -479,7 +488,10 @@ mod tests {
         // nothing of the original is being echoed back at it — refusing here
         // would be a rule that blocks real work, which is how a guard gets
         // switched off.
-        assert!(!write_would_destroy(Some(LATIN1), "a completely new document"));
+        assert!(!write_would_destroy(
+            Some(LATIN1),
+            "a completely new document"
+        ));
     }
 
     #[test]
@@ -523,7 +535,10 @@ mod tests {
     fn a_bom_is_taken_off_for_display_and_reported() {
         let f = decode_for_display("\u{FEFF}# Title\n".as_bytes());
         assert!(f.bom, "the BOM was not reported");
-        assert_eq!(f.text, "# Title\n", "the BOM is still in front of the heading");
+        assert_eq!(
+            f.text, "# Title\n",
+            "the BOM is still in front of the heading"
+        );
         assert!(!f.lossy, "a BOM is valid UTF-8 and is not a lossy read");
     }
 
@@ -538,15 +553,20 @@ mod tests {
     fn crlf_is_recorded_and_the_editor_gets_lf() {
         let f = decode_for_display(b"a\r\nb\r\nc");
         assert_eq!(f.eol, "crlf");
-        assert_eq!(f.text, "a\nb\nc",
-                   "the editor must hold LF; a textarea gives no choice");
+        assert_eq!(
+            f.text, "a\nb\nc",
+            "the editor must hold LF; a textarea gives no choice"
+        );
     }
 
     #[test]
     fn lf_and_mixed_are_told_apart() {
         assert_eq!(decode_for_display(b"a\nb\nc").eol, "lf");
-        assert_eq!(decode_for_display(b"a\r\nb\nc").eol, "mixed",
-                   "a mixed file reported as either lets a save rewrite the minority in silence");
+        assert_eq!(
+            decode_for_display(b"a\r\nb\nc").eol,
+            "mixed",
+            "a mixed file reported as either lets a save rewrite the minority in silence"
+        );
     }
 
     #[test]
@@ -569,8 +589,11 @@ mod tests {
         ] {
             let f = decode_for_display(&original);
             let back = reapply_encoding(&f.text, f.bom, f.eol);
-            assert_eq!(back.as_bytes(), &original[..],
-                       "a file opened and saved untouched changed on disk");
+            assert_eq!(
+                back.as_bytes(),
+                &original[..],
+                "a file opened and saved untouched changed on disk"
+            );
         }
     }
 
@@ -581,8 +604,11 @@ mod tests {
         // sides are LF now, and the difference is restored only at the write.
         let f = decode_for_display(b"a\r\nb");
         assert_eq!(f.text, "a\nb", "the baseline and the editor must agree");
-        assert_ne!(reapply_encoding(&f.text, f.bom, f.eol), f.text,
-                   "...and the file's own ending must still be restored");
+        assert_ne!(
+            reapply_encoding(&f.text, f.bom, f.eol),
+            f.text,
+            "...and the file's own ending must still be restored"
+        );
     }
 
     #[test]

@@ -1531,3 +1531,74 @@ test('a torn-off tab can be saved in the new window without rewriting the file',
     await expect(page.locator('#toast')).toContainText('Saved');
     expect(await raw(page, CRLF_PATH)).toBe('# A\r\n\r\nbody\r\n');
   });
+
+// ---------------------------------------------------------------
+// Printing renders what is on screen, not what was rendered last
+//
+// `@media print` hides the toolbar, the tab strip and the editor and
+// **un-hides `#previewPane`** — so printing from Edit view puts the preview on
+// paper whether or not anybody has looked at it. With tabs, the preview can
+// hold a *different document*: switching tab in Edit view never re-renders,
+// because there is nothing on screen to re-render.
+//
+// `window.addEventListener('beforeprint', …)` is the whole guard, and nothing
+// exercised it — no test in this file mentioned printing at all. The failure
+// is silent and lands on paper, which is the one place this app's output goes
+// that a user cannot check first.
+// ---------------------------------------------------------------
+
+const printDocs = {
+  launchFile: 'C:\\p\\a.md',
+  files: { 'C:\\p\\a.md': '# AAA', 'C:\\p\\b.md': '# BBB' },
+  openResponse: 'C:\\p\\b.md',
+};
+
+test('the preview is what print un-hides, so print media reveals it in edit view',
+  async ({ page }) => {
+    // The premise. Without it the test below is about a hidden element and
+    // proves nothing about paper.
+    await boot(page, printDocs);
+    await page.keyboard.press('Control+1');
+    await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
+    await expect(page.locator('#previewPane')).toBeHidden();
+    await page.emulateMedia({ media: 'print' });
+    await expect(page.locator('#previewPane')).toBeVisible();
+    await expect(page.locator('#editorPane')).toBeHidden();
+  });
+
+test('printing after switching tab in edit view renders the tab you are on',
+  async ({ page }) => {
+    await boot(page, printDocs);
+    // Render A, then go back to edit view and open B. Switching tab in edit
+    // view leaves the preview holding A — which is the trap, so assert it
+    // rather than assuming it: if the app re-rendered here anyway, the
+    // `beforeprint` assertion below would pass over a guard that does nothing.
+    await page.keyboard.press('Control+2');
+    await expect(page.locator('#preview h1')).toHaveText('AAA');
+    await page.keyboard.press('Control+1');
+    await page.keyboard.press('Control+o');
+    await expect(page.locator('.tab')).toHaveCount(2);
+    await expect(page.locator('#preview h1')).toHaveText('AAA');
+
+    await page.evaluate(() => window.dispatchEvent(new Event('beforeprint')));
+    await expect(page.locator('#preview h1')).toHaveText('BBB');
+  });
+
+test('printing an unchanged preview leaves it alone', async ({ page }) => {
+  // The other direction. A guard that re-rendered on every `beforeprint`
+  // would satisfy the test above and throw away the preview's scroll position
+  // on every print of a document nobody has touched.
+  await boot(page, printDocs);
+  await page.keyboard.press('Control+2');
+  await expect(page.locator('#preview h1')).toHaveText('AAA');
+  const before = await page.evaluate(() => {
+    const h = document.querySelector('#preview h1');
+    h.dataset.probe = 'kept';               // survives iff nothing re-rendered
+    return document.querySelector('#preview').innerHTML.length;
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event('beforeprint')));
+  await expect(page.locator('#preview h1')).toHaveAttribute('data-probe', 'kept');
+  expect(await page.evaluate(
+    () => document.querySelector('#preview').innerHTML.length)).toBeGreaterThan(0);
+  expect(before).toBeGreaterThan(0);
+});
