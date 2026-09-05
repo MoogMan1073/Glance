@@ -66,6 +66,19 @@ block does not pad anything out.
 Useful for markdown tables: Alt+drag down a column to fix its width or blank
 it out across every row at once.
 
+## Right-click menu
+
+Right-clicking in the editor opens a formatting menu: **Format** for bold,
+italic, strikethrough, highlight, code and clear-formatting; **Paragraph**
+for lists, headings and quotes; **Insert** for tables, rules and images.
+The Paragraph submenu ticks the style the cursor is currently in.
+
+Cut, Copy, Paste and Select all are there too — the menu replaces the one
+the system would otherwise show.
+
+Right-clicking a tab offers to move that document to its own window, close
+it, or close the others.
+
 ## Keyboard shortcuts
 
 ### Files
