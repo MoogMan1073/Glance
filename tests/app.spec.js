@@ -1503,3 +1503,32 @@ test('right-clicking rendered text opens the formatting menu there', async ({ pa
   // The caret moved to what was right-clicked, so the menu acts on that block.
   expect((await liveState(page)).gapIndex).toBe(2);
 });
+
+test('dragging across rendered text selects it in the editor', async ({ page }) => {
+  await live(page, '# Title\n\nFirst paragraph with several words.\n\nSecond paragraph too.\n', 0);
+  const pts = await page.evaluate(() => {
+    const ps = Array.from(document.querySelectorAll('#liveLayer p'));
+    const a = ps[0].getBoundingClientRect();
+    const b = ps[1].getBoundingClientRect();
+    return { ax: a.left + 30, ay: a.top + a.height / 2, bx: b.left + 60, by: b.top + b.height / 2 };
+  });
+  await page.mouse.move(pts.ax, pts.ay);
+  await page.mouse.down();
+  await page.mouse.move(pts.bx, pts.by, { steps: 8 });
+  await page.mouse.up();
+  // The highlight was real HTML the editor knew nothing about; it has to end
+  // up as a real editor selection, or the toolbar would act on nothing.
+  const sel = await page.evaluate(() => {
+    const ed = document.getElementById('editor');
+    return {
+      text: ed.value.slice(ed.selectionStart, ed.selectionEnd),
+      focused: document.activeElement === ed,
+    };
+  });
+  expect(sel.focused).toBe(true);
+  expect(sel.text).toContain('paragraph with several words');
+  expect(sel.text).toContain('Second');
+  // Bold now applies to what was dragged over, rather than silently doing nothing.
+  await page.keyboard.press('Control+b');
+  expect(await editorValue(page)).toContain('**');
+});

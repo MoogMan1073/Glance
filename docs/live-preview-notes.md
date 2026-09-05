@@ -102,12 +102,33 @@ into `#selMirror`, not the block rendering.
 
 ### Known limits
 
-- Reveal is per block, not per inline range: editing one word of a paragraph
-  shows the whole paragraph as source. Obsidian unwraps individual markers.
-- The open block is plain monospace — no syntax colouring while you type.
-- Column selection is not available in live view; a rectangle spanning
-  rendered blocks has no meaning in source terms.
-- Click-to-caret aligns rendered text against source by skipping the
-  characters that did not survive rendering. Emoji, footnote markers and
-  `{.attrs}` break that assumption, so a confidence check falls back to the
-  start of the block rather than guessing.
+Measured against the built feature, not estimated.
+
+- **Reveal is per block, not per inline range.** Putting the caret in one
+  checkbox item turns the *whole list* to monospace source, where Obsidian
+  would unwrap only the markers on that line. This is the largest gap from
+  the original ask, and it follows from grouping on depth-0 `token.map`.
+- **A document that is a single block shows no rendered text at all** — live
+  view degrades to Edit view exactly for the shortest notes.
+- **The open block loses its styling**: a rendered `<h1>` is 28.5px Segoe UI,
+  its source is 14px Cascadia Code with the heading rule gone.
+- **Content below the caret shifts on every block change**, by the difference
+  between a block's rendered and source heights: about 61px entering an H1,
+  30px an H2, 29px a blockquote, 25px a table, 19px a list. Content *above*
+  does not move, because the gap is positioned by the flow above it — the
+  reflow is one-directional, which is the part that makes this bearable.
+- **Column selection is not available**; a rectangle spanning rendered blocks
+  has no meaning in source terms. Alt+drag says so rather than doing nothing.
+- **Click-to-caret aligns rendered text against source** by skipping the
+  characters that did not survive rendering. Emoji (enabled by default here),
+  footnote markers and `{.attrs}` break that assumption, so a confidence check
+  drops the caret at the start of the block rather than guessing — a click in
+  an emoji paragraph can land ~90 characters early.
+- **Entering live view on a very large document costs**: ~620 ms on a
+  5,400-block file, and block-crossing caret moves run ~70 ms there.
+
+A dragged selection over rendered text is converted into the editor's own
+selection, opening every block it touches. Without that the browser highlight
+would be real while `editor.selectionStart === selectionEnd`, so Ctrl+B and
+the toolbar would silently act on nothing — a failure mode with no visible
+symptom until the file is saved.

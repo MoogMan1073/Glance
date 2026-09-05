@@ -20,6 +20,9 @@ the cursor away and that block renders again.
 
 - **Click anywhere** in the text to put the cursor there. The block you clicked
   opens for editing.
+- **Drag across the text** to select it. The selection becomes a real editor
+  selection, so bold, quote and the rest apply to it; every block it covers
+  opens as source.
 - **Click a checkbox** to tick it off. That edits the file — and only that —
   so the cursor and your place on the page do not move.
 - **Ctrl+click a link** to open it in your browser. A plain click puts the
