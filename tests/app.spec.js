@@ -34,6 +34,7 @@ function tauriStub(opts) {
       newWindows: [],
       newWindowFails: false,
       handoffDoc: null,
+      clipboardText: '',
     }, ${JSON.stringify(opts || {})});
     const T = () => window.__TAURI_TEST__;
     window.__TAURI__ = {
@@ -95,6 +96,10 @@ function tauriStub(opts) {
         }),
       },
       opener: { openUrl: async (u) => { T().openedUrls.push(u); } },
+      clipboardManager: {
+        readText: async () => T().clipboardText || '',
+        writeText: async (t) => { T().clipboardText = t; },
+      },
     };
   `;
 }
@@ -909,15 +914,15 @@ test('right-clicking a tab offers to move it to a new window', async ({ page }) 
   await boot(page, twoDocs);
   await page.keyboard.press('Control+o');
   await page.locator('.tab').first().click({ button: 'right' });
-  await expect(page.locator('#tabMenu')).toBeVisible();
-  await expect(page.locator('#tabMenu .menu-item').first()).toHaveText('Move to New Window');
+  await expect(page.locator('#ctxMenu')).toBeVisible();
+  await expect(page.locator('#ctxMenu .menu-item').first()).toHaveText('Move to New Window');
 });
 
 test('the context menu moves the document out and closes its tab', async ({ page }) => {
   await boot(page, twoDocs);
   await page.keyboard.press('Control+o');
   await page.locator('.tab').first().click({ button: 'right' });
-  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await page.locator('#ctxMenu .menu-item', { hasText: 'Move to New Window' }).click();
   await expect(page.locator('.tab')).toHaveCount(1);
   const wins = await newWindows(page);
   expect(wins).toHaveLength(1);
@@ -932,7 +937,7 @@ test('unsaved text travels to the new window', async ({ page }) => {
   await page.keyboard.press('Control+o');
   await setEditor(page, '# BBB edited but never saved');
   await page.locator('.tab').nth(1).click({ button: 'right' });
-  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await page.locator('#ctxMenu .menu-item', { hasText: 'Move to New Window' }).click();
   const wins = await newWindows(page);
   expect(wins[0].doc.content).toBe('# BBB edited but never saved');
   expect(wins[0].doc.saved).toContain('BBB');       // the on-disk text
@@ -944,7 +949,7 @@ test('moving out never prompts, because nothing is being discarded', async ({ pa
   await page.keyboard.press('Control+o');
   await setEditor(page, 'dirty');
   await page.locator('.tab').nth(1).click({ button: 'right' });
-  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await page.locator('#ctxMenu .menu-item', { hasText: 'Move to New Window' }).click();
   await expect(page.locator('.tab')).toHaveCount(1);
   expect(await page.evaluate(() => window.__TAURI_TEST__.asks.length)).toBe(0);
 });
@@ -956,14 +961,14 @@ test('a lone document cannot be moved out — it already has its own window', as
     document.getElementById('tabbar').hidden = false;
   });
   await page.locator('.tab').first().click({ button: 'right' });
-  await expect(page.locator('#tabMenu .menu-item').first()).toBeDisabled();
+  await expect(page.locator('#ctxMenu .menu-item').first()).toBeDisabled();
 });
 
 test('the tab stays put if the new window cannot be created', async ({ page }) => {
   await boot(page, { ...twoDocs, newWindowFails: true });
   await page.keyboard.press('Control+o');
   await page.locator('.tab').first().click({ button: 'right' });
-  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await page.locator('#ctxMenu .menu-item', { hasText: 'Move to New Window' }).click();
   await expect(page.locator('#toast')).toContainText('Could not open a new window');
   await expect(page.locator('.tab')).toHaveCount(2);   // nothing lost
 });
@@ -1325,3 +1330,344 @@ test('the banner survives read view, which is where it matters most',
     await expect(page.locator('body')).toHaveAttribute('data-view', 'read');
     await expect(page.locator('#readOnlyBanner')).toBeVisible();
   });
+
+test('the toolbar cannot edit a read-only document either', async ({ page }) => {
+  // The textarea refuses keystrokes, but execCommand's setRangeText fallback
+  // does not honour readOnly — so every toolbar button and formatting hotkey
+  // was a way round that refusal, leaving the document dirty and the user told
+  // only at save. That is the failure the read-only guard exists to prevent.
+  await boot(page, lossyOpts());
+  await page.keyboard.press('Control+1');
+  const before = await editorValue(page);
+  await page.evaluate(() => {
+    const ed = document.getElementById('editor');
+    ed.focus();
+    ed.setSelectionRange(2, 6);
+  });
+  await page.locator('#btn-bold').click();
+  expect(await editorValue(page)).toBe(before);
+  await page.keyboard.press('Control+b');
+  expect(await editorValue(page)).toBe(before);
+  await expect(page.locator('#toast')).toContainText('Read-only');
+  // Still not dirty, so the tab shows no unsaved marker.
+  await expect(page.locator('#readOnlyBanner')).toBeVisible();
+});
+
+// ---------------------------------------------------------------
+// Editor context menu
+// ---------------------------------------------------------------
+
+// Match on the label attribute: an item's text also contains its shortcut hint.
+const menuItem = (page, label) =>
+  page.locator(`#ctxMenu .menu-item[data-label="${label}"]`);
+
+async function openEditorMenu(page, text, selStart, selEnd) {
+  await boot(page);
+  await page.keyboard.press('Control+1');
+  await setEditor(page, text ?? 'hello world', selStart ?? 0, selEnd ?? 0);
+  // Dispatch the event rather than pressing the right button: a real press
+  // moves the caret first (exactly as Windows does when you click outside a
+  // selection), and these tests are about what the menu does to a selection
+  // that is already there.
+  await page.evaluate(() => {
+    const ta = document.getElementById('editor');
+    const r = ta.getBoundingClientRect();
+    ta.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 20,
+    }));
+  });
+  await expect(page.locator('#ctxMenu')).toBeVisible();
+}
+
+test('right-clicking the editor opens the formatting menu', async ({ page }) => {
+  await openEditorMenu(page);
+  for (const label of ['Add link', 'Format', 'Paragraph', 'Insert', 'Cut', 'Copy', 'Paste', 'Select all']) {
+    await expect(menuItem(page, label)).toHaveCount(1);
+  }
+});
+
+test('the Format submenu applies bold to the selection', async ({ page }) => {
+  await openEditorMenu(page, 'make me bold', 5, 7);
+  await menuItem(page, 'Format').hover();
+  await menuItem(page, 'Bold').click();
+  expect(await editorValue(page)).toBe('make **me** bold');
+  await expect(page.locator('#ctxMenu')).toBeHidden();
+});
+
+test('the Paragraph submenu sets a heading and ticks the current one', async ({ page }) => {
+  await openEditorMenu(page, '## Existing heading', 5, 5);
+  await menuItem(page, 'Paragraph').hover();
+  // The line is already an H2, so that entry carries the check.
+  await expect(menuItem(page, 'Heading 2').locator('.menu-check')).toHaveCount(1);
+  await expect(menuItem(page, 'Heading 1').locator('.menu-check')).toHaveCount(0);
+  await menuItem(page, 'Heading 3').click();
+  expect(await editorValue(page)).toBe('### Existing heading');
+});
+
+test('the Paragraph submenu makes a task list', async ({ page }) => {
+  await openEditorMenu(page, 'first\nsecond', 0, 12);
+  await menuItem(page, 'Paragraph').hover();
+  await menuItem(page, 'Task list').click();
+  expect(await editorValue(page)).toBe('- [ ] first\n- [ ] second');
+});
+
+test('the Insert submenu inserts a table', async ({ page }) => {
+  await openEditorMenu(page, '', 0, 0);
+  await menuItem(page, 'Insert').hover();
+  await menuItem(page, 'Table').click();
+  expect(await editorValue(page)).toContain('| Column 1 | Column 2 |');
+});
+
+test('Clear formatting strips inline markers from the selection', async ({ page }) => {
+  const text = 'plain **bold** and *italic* and ~~struck~~ and `code` end';
+  await openEditorMenu(page, text, 0, text.length);
+  await menuItem(page, 'Format').hover();
+  await menuItem(page, 'Clear formatting').click();
+  expect(await editorValue(page)).toBe('plain bold and italic and struck and code end');
+});
+
+test('Cut and Copy are disabled without a selection', async ({ page }) => {
+  await openEditorMenu(page, 'no selection here', 3, 3);
+  await expect(menuItem(page, 'Cut')).toBeDisabled();
+  await expect(menuItem(page, 'Copy')).toBeDisabled();
+  await expect(menuItem(page, 'Paste')).toBeEnabled();
+});
+
+test('Paste inserts the clipboard text at the caret', async ({ page }) => {
+  await boot(page, { clipboardText: 'PASTED' });
+  await page.keyboard.press('Control+1');
+  await setEditor(page, 'ab', 1, 1);
+  await page.evaluate(() => {
+    const ta = document.getElementById('editor');
+    const r = ta.getBoundingClientRect();
+    ta.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 20,
+    }));
+  });
+  await menuItem(page, 'Paste').click();
+  await expect.poll(() => editorValue(page)).toBe('aPASTEDb');
+});
+
+test('Select all selects the whole document', async ({ page }) => {
+  await openEditorMenu(page, 'one\ntwo\nthree', 0, 0);
+  await menuItem(page, 'Select all').click();
+  const sel = await page.evaluate(() => {
+    const ta = document.getElementById('editor');
+    return [ta.selectionStart, ta.selectionEnd, ta.value.length];
+  });
+  expect(sel[0]).toBe(0);
+  expect(sel[1]).toBe(sel[2]);
+});
+
+test('Escape and clicking away both close the menu', async ({ page }) => {
+  await openEditorMenu(page);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#ctxMenu')).toBeHidden();
+  await page.locator('#editor').click({ button: 'right' });
+  await expect(page.locator('#ctxMenu')).toBeVisible();
+  await page.locator('#btn-view-split').click();
+  await expect(page.locator('#ctxMenu')).toBeHidden();
+});
+
+// ---------------------------------------------------------------
+// Live view
+// ---------------------------------------------------------------
+
+const LIVE_DOC = '# Title\n\nFirst paragraph here.\n\n- [ ] Sam B.\n- [x] Done\n\nLast paragraph.\n';
+
+// Open a document in live view with the caret at `caret`.
+async function live(page, text, caret) {
+  await boot(page);
+  await setEditor(page, text === undefined ? LIVE_DOC : text, caret ?? 0);
+  await page.keyboard.press('Control+4');
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'live');
+  await page.waitForFunction(() => document.querySelector('#liveLayer .live-gap') !== null);
+}
+
+// Which block is opened as raw source, and whether the editor sits exactly
+// over the hole it left. A non-zero offset means the two layouts disagree.
+// The reveal is laid out on an animation frame, so wait for one first.
+const liveState = (page) =>
+  page.evaluate(async () => {
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const layer = document.getElementById('liveLayer');
+    const ed = document.getElementById('editor');
+    const gaps = Array.from(layer.querySelectorAll('.live-gap'));
+    return {
+      blocks: layer.children.length,
+      gapIndex: gaps.length ? Array.from(layer.children).indexOf(gaps[0]) : null,
+      gapCount: gaps.length,
+      offset: gaps.length
+        ? Math.round(ed.getBoundingClientRect().top - gaps[0].getBoundingClientRect().top)
+        : null,
+      caret: ed.selectionStart,
+    };
+  });
+
+test('live view renders the document and opens the caret’s block as source', async ({ page }) => {
+  await live(page);
+  // Everything but the open block is rendered markdown.
+  await expect(page.locator('#liveLayer h1')).toHaveText('Title');
+  await expect(page.locator('#liveLayer ul.contains-task-list li')).toHaveCount(2);
+  const s = await liveState(page);
+  expect(s.gapIndex).toBe(0);      // the caret is on line 0, the heading
+  expect(s.offset).toBe(0);        // editor lands exactly in the hole
+});
+
+test('moving the caret moves which block is open', async ({ page }) => {
+  await live(page);
+  const seen = [];
+  for (let i = 0; i < 6; i++) {
+    seen.push(await liveState(page));
+    await page.keyboard.press('ArrowDown');
+  }
+  // The reveal walks down with the caret, and never drifts off its hole.
+  expect(seen.map((s) => s.gapIndex)).toEqual([0, 1, 2, 3, 4, 4]);
+  expect(seen.every((s) => s.offset === 0)).toBe(true);
+});
+
+test('a selection spanning blocks opens all of them', async ({ page }) => {
+  await live(page, LIVE_DOC, 0);
+  await page.evaluate(() => {
+    const ed = document.getElementById('editor');
+    ed.setSelectionRange(2, 30);
+    document.dispatchEvent(new Event('selectionchange'));
+  });
+  await expect
+    .poll(async () => (await liveState(page)).gapCount)
+    .toBeGreaterThan(1);
+});
+
+test('typing in live view edits the document', async ({ page }) => {
+  await live(page);
+  await page.keyboard.press('End');
+  await page.keyboard.type(' here');
+  expect((await editorValue(page)).split('\n')[0]).toBe('# Title here');
+  expect((await liveState(page)).offset).toBe(0);
+});
+
+test('clicking rendered text puts the caret at that word', async ({ page }) => {
+  await live(page);
+  const at = await page.evaluate(() => {
+    const p = Array.from(document.querySelectorAll('#liveLayer p'))
+      .find((el) => el.textContent.startsWith('Last'));
+    const r = document.createRange();
+    r.setStart(p.firstChild, 14);   // between "paragraph" and "."
+    r.collapse(true);
+    const box = r.getBoundingClientRect();
+    return { x: box.left, y: box.top + box.height / 2 };
+  });
+  await page.mouse.click(at.x, at.y);
+  const s = await liveState(page);
+  const value = await editorValue(page);
+  expect(value.slice(s.caret - 9, s.caret)).toBe('paragraph');
+  expect(s.gapIndex).toBe(6);   // and that block is now the open one
+});
+
+test('ticking a checkbox edits the source without moving the caret', async ({ page }) => {
+  await live(page);
+  await page.locator('#liveLayer input.task-list-item-checkbox').first().click();
+  await expect
+    .poll(async () => (await editorValue(page)).split('\n')[4])
+    .toBe('- [x] Sam B.');
+  const s = await liveState(page);
+  expect(s.caret).toBe(0);      // the reading position is left alone
+  expect(s.gapIndex).toBe(0);
+});
+
+test('links open on Ctrl+click and place the caret on a plain click', async ({ page }) => {
+  // The caret sits in the first block, so the second one stays rendered.
+  await live(page, 'Somewhere else.\n\nText with a [link](https://example.com/x) here.\n', 0);
+  await page.locator('#liveLayer a[href]').click({ modifiers: ['Control'] });
+  expect(await page.evaluate(() => window.__TAURI_TEST__.openedUrls))
+    .toEqual(['https://example.com/x']);
+  // A plain click edits the link text instead of following it.
+  await page.keyboard.press('Control+1');
+  await page.keyboard.press('Control+4');
+  await page.locator('#liveLayer a[href]').click();
+  expect(await page.evaluate(() => window.__TAURI_TEST__.openedUrls))
+    .toEqual(['https://example.com/x']);
+  const s = await liveState(page);
+  expect(s.gapIndex).toBe(2);   // that block opened for editing instead
+});
+
+test('leaving live view gives the editor back its full size', async ({ page }) => {
+  await live(page);
+  await page.keyboard.press('Control+1');
+  const s = await page.evaluate(() => {
+    const ed = document.getElementById('editor');
+    return {
+      inline: ed.getAttribute('style') || '',
+      gaps: document.querySelectorAll('#liveLayer .live-gap').length,
+      tall: ed.getBoundingClientRect().height > 200,
+    };
+  });
+  expect(s.inline).toBe('');
+  expect(s.gaps).toBe(0);
+  expect(s.tall).toBe(true);
+});
+
+test('live view follows a tab switch', async ({ page }) => {
+  await live(page);
+  await page.keyboard.press('Control+t');
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'live');
+  await setEditor(page, '## Second document\n');
+  await expect(page.locator('#liveLayer')).toHaveText(/Second document|## Second/);
+  await page.keyboard.press('Alt+1');
+  await expect(page.locator('#liveLayer h1')).toHaveText('Title');
+});
+
+test('column selection says where it lives instead of doing nothing', async ({ page }) => {
+  await live(page);
+  const box = await page.locator('#editor').boundingBox();
+  await page.keyboard.down('Alt');
+  await page.mouse.move(box.x + 10, box.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 40, box.y + 5);
+  await page.mouse.up();
+  await page.keyboard.up('Alt');
+  await expect(page.locator('#toast')).toContainText('Edit view');
+});
+
+test('right-clicking rendered text opens the formatting menu there', async ({ page }) => {
+  await live(page, 'First block.\n\nSecond block here.\n', 0);
+  const at = await page.evaluate(() => {
+    const p = Array.from(document.querySelectorAll('#liveLayer p'))
+      .find((el) => el.textContent.startsWith('Second'));
+    const r = p.getBoundingClientRect();
+    return { x: r.left + 20, y: r.top + r.height / 2 };
+  });
+  await page.mouse.click(at.x, at.y, { button: 'right' });
+  await expect(page.locator('#ctxMenu')).toBeVisible();
+  // The caret moved to what was right-clicked, so the menu acts on that block.
+  expect((await liveState(page)).gapIndex).toBe(2);
+});
+
+test('dragging across rendered text selects it in the editor', async ({ page }) => {
+  await live(page, '# Title\n\nFirst paragraph with several words.\n\nSecond paragraph too.\n', 0);
+  const pts = await page.evaluate(() => {
+    const ps = Array.from(document.querySelectorAll('#liveLayer p'));
+    const a = ps[0].getBoundingClientRect();
+    const b = ps[1].getBoundingClientRect();
+    return { ax: a.left + 30, ay: a.top + a.height / 2, bx: b.left + 60, by: b.top + b.height / 2 };
+  });
+  await page.mouse.move(pts.ax, pts.ay);
+  await page.mouse.down();
+  await page.mouse.move(pts.bx, pts.by, { steps: 8 });
+  await page.mouse.up();
+  // The highlight was real HTML the editor knew nothing about; it has to end
+  // up as a real editor selection, or the toolbar would act on nothing.
+  const sel = await page.evaluate(() => {
+    const ed = document.getElementById('editor');
+    return {
+      text: ed.value.slice(ed.selectionStart, ed.selectionEnd),
+      focused: document.activeElement === ed,
+    };
+  });
+  expect(sel.focused).toBe(true);
+  expect(sel.text).toContain('paragraph with several words');
+  expect(sel.text).toContain('Second');
+  // Bold now applies to what was dragged over, rather than silently doing nothing.
+  await page.keyboard.press('Control+b');
+  expect(await editorValue(page)).toContain('**');
+});

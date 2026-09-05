@@ -1,6 +1,6 @@
 [package]
 name = "glance"
-version = "0.4.1"
+version = "0.6.1"
 description = "Glance — fast, minimal Markdown reader and editor"
 authors = ["DSI Innovations, LLC"]
 license = "0BSD"
@@ -16,6 +16,7 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 
 # Small binary, fast startup.

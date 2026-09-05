@@ -7,10 +7,15 @@ reading it in well under a second.
 
 ## What it does
 
-- **Three views** — **Read** (rendered document), **Edit** (raw text), and
-  **Split** (side-by-side with live preview and synced scrolling).
-  Opening a file from Explorer starts in Read view; a new blank file starts
-  in Edit view.
+- **Four views** — **Read** (rendered document), **Edit** (raw text),
+  **Split** (side-by-side with live preview and synced scrolling), and
+  **Live** (rendered *and* editable). Opening a file from Explorer starts in
+  Read view; a new blank file starts in Edit view.
+- **Live view** — the document reads as rendered Markdown, but the block the
+  cursor is in turns back into raw source, so you edit the real `## heading`
+  or `- [ ] item` in place while everything around it stays rendered. Click
+  anywhere to put the cursor there; click a checkbox to tick it off without
+  moving your place; Ctrl+click a link to follow it.
 - **Tabs** — several documents open at once, browser-style, each keeping its
   own cursor, scroll position and undo history. The tab bar only appears once
   there's a second document, so single-file reading stays clean. Opening a
@@ -21,6 +26,8 @@ reading it in well under a second.
 - **Column selection** — Alt+drag selects a rectangle, like Notepad++ and the
   code editors. Drag down for a cursor on every line and type a prefix onto
   all of them at once; the whole edit undoes in one step.
+- **Right-click menu** — Obsidian-style formatting menu in the editor, with
+  Format / Paragraph / Insert submenus, plus the usual clipboard actions.
 - **Word-like toolbar** — headings, bold, italic, strikethrough, highlight,
   inline code, code blocks, links, images, blockquotes, bulleted / numbered /
   checkbox lists, tables, horizontal rules.
@@ -69,7 +76,7 @@ launch. The UI itself is plain HTML/CSS/JS with no framework.
 | --- | --- |
 | **Files** | Ctrl+N new · Ctrl+O open · Ctrl+S save · Ctrl+Shift+S save as |
 | **Tabs** | Ctrl+T new · Ctrl+W close · Ctrl+Tab / Ctrl+Shift+Tab cycle · Alt+1…8 jump · Alt+9 last · right-click or drag out to detach |
-| **Views** | Ctrl+1 edit · Ctrl+2 split · Ctrl+3 read |
+| **Views** | Ctrl+1 edit · Ctrl+2 split · Ctrl+3 read · Ctrl+4 live |
 | **Text** | Ctrl+B bold · Ctrl+I italic · Ctrl+Shift+X strikethrough · Ctrl+Shift+H highlight |
 | **Code** | Ctrl+E inline code · Ctrl+Shift+C code block |
 | **Structure** | Ctrl+Alt+1…6 heading · Ctrl+Alt+0 paragraph · Ctrl+Shift+Q quote |
@@ -116,7 +123,12 @@ docs/                 The Markdown cheat sheet the help is based on
   safe to open.
 - The editor is a plain text area — no syntax-highlighting editor component.
   That keeps startup instant and behavior predictable; the formatting
-  toolbar and hotkeys do the Markdown for you.
+  toolbar and hotkeys do the Markdown for you. Live view is built on that same
+  text area rather than on an editor framework: it renders the document around
+  the text area and shrinks it to the block being edited, so undo, IME,
+  spellcheck and every existing command keep working untouched.
+  [docs/live-preview-notes.md](docs/live-preview-notes.md) records the
+  measurements behind that choice.
 - Preferences (theme) persist between sessions; everything else is
   deliberately stateless.
 
