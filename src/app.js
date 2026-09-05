@@ -431,72 +431,287 @@
     else activate(id);
   });
 
-  // ---------------- Tab context menu ----------------
+  // ---------------- Context menus ----------------
+  // One menu implementation with submenu support, shared by the tab strip and
+  // the editor. Right-clicking either replaces the webview's own menu, so
+  // whatever it took away — cut, copy, paste — has to be offered back here.
 
-  const tabMenu = document.getElementById('tabMenu');
+  const ctxMenu = document.getElementById('ctxMenu');
+  let menuOwner = null;   // the element the open menu belongs to
 
-  function closeTabMenu() {
-    tabMenu.hidden = true;
-    tabMenu.textContent = '';
+  const MENU_ICONS = {
+    link: 'M6.5 4.4 8.6 2.3a3 3 0 0 1 4.24 0l.86.86a3 3 0 0 1 0 4.24l-2.1 2.1a3 3 0 0 1-1.86.87l.9-1.87 1.99-2.16a1.5 1.5 0 0 0 0-2.12l-.85-.85a1.5 1.5 0 0 0-2.12 0L7.55 5.5l-1.05-1.1zm3 7.2-2.1 2.1a3 3 0 0 1-4.24 0l-.86-.86a3 3 0 0 1 0-4.24l2.1-2.1a3 3 0 0 1 1.86-.87l-.9 1.87-1.99 2.16a1.5 1.5 0 0 0 0 2.12l.85.85a1.5 1.5 0 0 0 2.12 0l2.12-2.12 1.04 1.09zM10.6 4.34 5.4 9.54l1.06 1.06 5.2-5.2-1.06-1.06z',
+    format: 'M11.1 2.2a1.9 1.9 0 0 1 2.7 2.7l-7.9 7.9-3.4.7.7-3.4 7.9-7.9zM10 4.4 4.5 9.9l-.3 1.9 1.9-.3L11.6 6 10 4.4z',
+    paragraph: 'M8.5 2H12v1.5h-1.5V14H9V3.5H8v10.5H6.5V9.2A3.6 3.6 0 0 1 6.5 2h2zM6.5 3.5a2.1 2.1 0 0 0 0 4.2V3.5z',
+    insert: 'M7.25 2.5h1.5v4.75h4.75v1.5H8.75v4.75h-1.5V8.75H2.5v-1.5h4.75V2.5z',
+    cut: 'M4 2.2 7.4 7l-.9 1.3-1-.4a2.2 2.2 0 1 0-1 1.9l.9-1.3.9 1.3L4 12.6a2.2 2.2 0 1 0 1.1 1.1l6-8.6-1.2-.9L8 7.1 5.2 3 4 2.2zM3.3 10.9a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm0-6.6a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm8.4 6.6 1.1 1.6a2.2 2.2 0 1 1-1.1.8l-1.1-1.6.9-1.3.2.5z',
+    copy: 'M5 1.5h6.5a1 1 0 0 1 1 1V10h-1.5V3H5V1.5zM3 4h6.5a1 1 0 0 1 1 1v8.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm.5 1.5v7.5h5.5V5.5h-5.5z',
+    paste: 'M6 1.5h4a1 1 0 0 1 1 1V3h1.5a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1H5v-.5a1 1 0 0 1 1-1zm.5 1.5v1h3V3h-3zM4 4.5V13.5h8V4.5h-1v1H5v-1H4z',
+    selectAll: 'M2 2h3v1.5H3.5V5H2V2zm9 0h3v3h-1.5V3.5H11V2zM2 11h1.5v1.5H5V14H2v-3zm10.5 0H14v3h-3v-1.5h1.5V11zM6 6h4v4H6V6z',
+    bullet: 'M3 3.25a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm3 .25h8v1.5H6V3.5zM3 7a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm3 .25h8v1.5H6v-1.5zM3 10.75a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm3 .25h8v1.5H6V11z',
+    numbered: 'M2.4 2.2h1.1v3.1H2.4V3.4l-.8.3-.3-.9 1.1-.6zM6 3.5h8V5H6V3.5zm0 3.75h8v1.5H6v-1.5zM6 11h8v1.5H6V11zM1.5 8.1c0-.9.7-1.4 1.5-1.4s1.5.5 1.5 1.3c0 .5-.3.9-.7 1.3l-.8.7h1.5v.9h-3v-.8L2.9 8.7c.3-.3.5-.5.5-.7 0-.3-.2-.4-.4-.4-.3 0-.5.2-.5.5h-1z',
+    task: 'M2.5 2h4A.5.5 0 0 1 7 2.5v4a.5.5 0 0 1-.5.5h-4A.5.5 0 0 1 2 6.5v-4a.5.5 0 0 1 .5-.5zM3 3v3h3V3H3zm-.5 6.5h4a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-.5.5h-4a.5.5 0 0 1-.5-.5v-4a.5.5 0 0 1 .5-.5zM3 10.5v3h3v-3H3zm1.1 2.5L3 11.9l.6-.6.5.5 1.3-1.3.6.6L4.1 13zM9 3.5h5V5H9V3.5zM9 11h5v1.5H9V11z',
+    quote: 'M3.5 4A2.5 2.5 0 0 0 1 6.5c0 1.2.85 2.2 2 2.44-.14.9-.62 1.75-1.4 2.31l.9 1.15C4.1 11.2 5 9.6 5 7.75V6.5A1.5 1.5 0 0 0 3.5 4zm7 0A2.5 2.5 0 0 0 8 6.5c0 1.2.85 2.2 2 2.44-.14.9-.62 1.75-1.4 2.31l.9 1.15c1.6-1.2 2.5-2.8 2.5-4.65V6.5A1.5 1.5 0 0 0 10.5 4z',
+    code: 'M5.7 3.7 1.4 8l4.3 4.3 1.06-1.06L3.52 8l3.24-3.24L5.7 3.7zm4.6 0-1.06 1.06L12.48 8l-3.24 3.24 1.06 1.06L14.6 8l-4.3-4.3z',
+    codeblock: 'M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-11zM3.5 2.5v11h9v-11h-9zM6.8 6 5 8l1.8 2 .9-.8L6.6 8l1.1-1.2L6.8 6zm2.4 0-.9.8L9.4 8l-1.1 1.2.9.8L11 8 9.2 6z',
+    table: 'M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9zM3.5 6h9V3.5h-9V6zm4 1.5h-4v2h4v-2zm1.5 0v2h3.5v-2H9zm-1.5 3.5h-4v1.5h4V11zm1.5 1.5h3.5V11H9v1.5z',
+    hr: 'M2 7.25h12v1.5H2v-1.5z',
+    image: 'M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9zm1.5 0v6.1l2.3-2.3a1 1 0 0 1 1.4 0l1.8 1.8 1.3-1.3a1 1 0 0 1 1.4 0l1.8 1.8V3.5h-11zM10 5a1.2 1.2 0 1 1 0 2.4A1.2 1.2 0 0 1 10 5z',
+    body: 'M2 3.5h12V5H2V3.5zm0 3.75h12v1.5H2v-1.5zM2 11h8v1.5H2V11z',
+    clear: 'M6.2 3h7.3v1.5H8.9l-1 3.2 5 5-1.06 1.06L2.2 3.86 3.26 2.8 6.2 5.74V3zm-1.4 6.2 1.2 1.2-.7 2.3H3.6l1.2-3.5z',
+  };
+
+  const icon = (name) => name && MENU_ICONS[name]
+    ? `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="${MENU_ICONS[name]}"/></svg>`
+    : '<span class="menu-icon-gap"></span>';
+
+  function closeMenu() {
+    ctxMenu.hidden = true;
+    ctxMenu.textContent = '';
+    menuOwner = null;
   }
 
-  function openTabMenu(id, x, y) {
-    const d = docs.find((t) => t.id === id);
-    if (!d) return;
-    tabMenu.textContent = '';
-    const items = [
+  const menuOpen = () => !ctxMenu.hidden;
+
+  function buildPanel(items) {
+    const panel = document.createElement('div');
+    panel.className = 'menu-panel';
+    panel.setAttribute('role', 'menu');
+    for (const item of items) {
+      if (item.separator) {
+        const sep = document.createElement('div');
+        sep.className = 'menu-sep';
+        panel.appendChild(sep);
+        continue;
+      }
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'menu-item';
+      btn.setAttribute('role', 'menuitem');
+      btn.dataset.label = item.label;   // stable hook for tests and styling
+      btn.disabled = !!item.disabled;
+      btn.innerHTML =
+        icon(item.icon) +
+        `<span class="menu-label">${item.label}</span>` +
+        (item.submenu ? '<span class="menu-arrow">›</span>'
+                      : item.checked ? '<span class="menu-check">✓</span>'
+                      : item.accel ? `<span class="menu-accel">${item.accel}</span>` : '');
+      if (item.submenu) {
+        btn.classList.add('has-submenu');
+        btn.setAttribute('aria-haspopup', 'true');
+        const open = () => openSubmenu(btn, item.submenu);
+        btn.addEventListener('mouseenter', open);
+        btn.addEventListener('focus', open);
+        btn.addEventListener('click', open);
+      } else {
+        btn.addEventListener('mouseenter', () => closeSubmenusAfter(panel));
+        btn.addEventListener('click', () => { closeMenu(); item.run(); });
+      }
+      panel.appendChild(btn);
+    }
+    return panel;
+  }
+
+  function closeSubmenusAfter(panel) {
+    let next = panel.nextElementSibling;
+    while (next) {
+      const after = next.nextElementSibling;
+      next.remove();
+      next = after;
+    }
+    for (const b of panel.querySelectorAll('.has-submenu')) b.classList.remove('open');
+  }
+
+  function openSubmenu(parentBtn, items) {
+    const panel = parentBtn.parentElement;
+    closeSubmenusAfter(panel);
+    parentBtn.classList.add('open');
+    const sub = buildPanel(items);
+    ctxMenu.appendChild(sub);
+    // Sit beside the parent item, flipping to its left edge if there is no
+    // room on the right.
+    const anchor = parentBtn.getBoundingClientRect();
+    const root = ctxMenu.getBoundingClientRect();
+    const w = sub.offsetWidth;
+    const h = sub.offsetHeight;
+    let left = anchor.right - root.left + 2;
+    if (anchor.right + w + 6 > window.innerWidth) left = anchor.left - root.left - w - 2;
+    let top = anchor.top - root.top - 4;
+    if (anchor.top + h + 6 > window.innerHeight) {
+      top = Math.max(-root.top + 4, window.innerHeight - h - 6 - root.top);
+    }
+    sub.style.left = left + 'px';
+    sub.style.top = top + 'px';
+  }
+
+  function showMenu(items, x, y, owner) {
+    closeMenu();
+    menuOwner = owner || null;
+    const root = buildPanel(items);
+    root.classList.add('menu-root');
+    ctxMenu.appendChild(root);
+    ctxMenu.hidden = false;
+    // Place at the cursor, pulled back inside the window if it would overflow.
+    const w = root.offsetWidth;
+    const h = root.offsetHeight;
+    ctxMenu.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 6)) + 'px';
+    ctxMenu.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 6)) + 'px';
+  }
+
+  window.addEventListener('pointerdown', (e) => {
+    if (menuOpen() && !e.target.closest('#ctxMenu')) closeMenu();
+  }, true);
+  window.addEventListener('blur', closeMenu);
+  window.addEventListener('keydown', (e) => {
+    if (menuOpen() && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMenu(); }
+  }, true);
+
+  // ---------------- Clipboard ----------------
+  // The webview's own menu is suppressed for our own, so these have to work.
+  // execCommand keeps cut and copy inside the textarea's undo history; reading
+  // the clipboard needs a real API, and Tauri's plugin is the dependable one.
+
+  async function clipboardRead() {
+    try {
+      if (T && T.clipboardManager) return (await T.clipboardManager.readText()) || '';
+    } catch (e) { /* fall through */ }
+    try {
+      if (navigator.clipboard && navigator.clipboard.readText) return await navigator.clipboard.readText();
+    } catch (e) { /* fall through */ }
+    return null;
+  }
+
+  function editorCut() {
+    if (!editor) return;
+    editor.focus();
+    if (!document.execCommand('cut')) showToast('Could not cut', true);
+  }
+
+  function editorCopy() {
+    if (!editor) return;
+    editor.focus();
+    if (!document.execCommand('copy')) showToast('Could not copy', true);
+  }
+
+  async function editorPaste() {
+    if (!editor) return;
+    const text = await clipboardRead();
+    if (text === null) { showToast('Could not read the clipboard', true); return; }
+    if (!text) return;
+    editor.focus();
+    replaceRange(editor.selectionStart, editor.selectionEnd, text);
+  }
+
+  function selectAll() {
+    if (!editor) return;
+    clearBlock();
+    editor.focus();
+    editor.setSelectionRange(0, editor.value.length);
+  }
+
+  // Strip inline markers from the selection — Obsidian's "clear formatting".
+  function clearFormatting() {
+    if (!editor) return;
+    const s = editor.selectionStart;
+    const e = editor.selectionEnd;
+    if (s === e) return;
+    const original = editor.value.slice(s, e);
+    let text = original;
+    let prev;
+    do {
+      prev = text;
+      text = text
+        .replace(/\*\*\*([\s\S]+?)\*\*\*/g, '$1')
+        .replace(/\*\*([\s\S]+?)\*\*/g, '$1')
+        .replace(/(?<!\*)\*(?!\*)([\s\S]+?)(?<!\*)\*(?!\*)/g, '$1')
+        .replace(/___([\s\S]+?)___/g, '$1')
+        .replace(/__([\s\S]+?)__/g, '$1')
+        .replace(/~~([\s\S]+?)~~/g, '$1')
+        .replace(/==([\s\S]+?)==/g, '$1')
+        .replace(/`([^`\n]+?)`/g, '$1');
+    } while (text !== prev);
+    if (text !== original) replaceRange(s, e, text, s, s + text.length);
+  }
+
+  // ---------------- Editor context menu ----------------
+
+  function editorMenuItems() {
+    const level = currentLineHeadingLevel();
+    const heading = (n) => ({
+      label: n === 0 ? 'Body' : `Heading ${n}`,
+      icon: n === 0 ? 'body' : null,
+      checked: level === n,
+      run: () => applyHeading(n),
+    });
+    return [
+      { label: 'Add link', icon: 'link', accel: 'Ctrl+K', run: insertLink },
+      { separator: true },
       {
-        label: 'Move to New Window',
-        // A lone document already has a window to itself.
-        disabled: docs.length < 2,
-        run: () => detachDoc(id),
+        label: 'Format', icon: 'format', submenu: [
+          { label: 'Bold', accel: 'Ctrl+B', run: () => toggleInline('**') },
+          { label: 'Italic', accel: 'Ctrl+I', run: () => toggleInline('*') },
+          { label: 'Strikethrough', accel: 'Ctrl+Shift+X', run: () => toggleInline('~~') },
+          { label: 'Highlight', accel: 'Ctrl+Shift+H', run: () => toggleInline('==') },
+          { separator: true },
+          { label: 'Code', icon: 'code', accel: 'Ctrl+E', run: () => toggleInline('`') },
+          { label: 'Code block', icon: 'codeblock', accel: 'Ctrl+Shift+C', run: insertCodeBlock },
+          { separator: true },
+          { label: 'Clear formatting', icon: 'clear', run: clearFormatting },
+        ],
       },
+      {
+        label: 'Paragraph', icon: 'paragraph', submenu: [
+          { label: 'Bullet list', icon: 'bullet', accel: 'Ctrl+Shift+8', run: () => toggleLinePrefix('ul') },
+          { label: 'Numbered list', icon: 'numbered', accel: 'Ctrl+Shift+7', run: () => toggleLinePrefix('ol') },
+          { label: 'Task list', icon: 'task', accel: 'Ctrl+Shift+9', run: () => toggleLinePrefix('task') },
+          { separator: true },
+          heading(1), heading(2), heading(3), heading(4), heading(5), heading(6), heading(0),
+          { separator: true },
+          { label: 'Quote', icon: 'quote', accel: 'Ctrl+Shift+Q', run: () => toggleLinePrefix('quote') },
+        ],
+      },
+      {
+        label: 'Insert', icon: 'insert', submenu: [
+          { label: 'Table', icon: 'table', run: insertTable },
+          { label: 'Horizontal rule', icon: 'hr', run: () => insertBlock('---\n') },
+          { label: 'Image', icon: 'image', run: () => insertSnippet('![', 'alt text', '](url)') },
+        ],
+      },
+      { separator: true },
+      { label: 'Cut', icon: 'cut', accel: 'Ctrl+X', disabled: !hasSelection(), run: editorCut },
+      { label: 'Copy', icon: 'copy', accel: 'Ctrl+C', disabled: !hasSelection(), run: editorCopy },
+      { label: 'Paste', icon: 'paste', accel: 'Ctrl+V', run: editorPaste },
+      { separator: true },
+      { label: 'Select all', icon: 'selectAll', accel: 'Ctrl+A', run: selectAll },
+    ];
+  }
+
+  const hasSelection = () => !!editor && editor.selectionStart !== editor.selectionEnd;
+
+  // ---------------- Tab context menu ----------------
+
+  function tabMenuItems(id) {
+    return [
+      // A lone document already has a window to itself.
+      { label: 'Move to New Window', disabled: docs.length < 2, run: () => detachDoc(id) },
       { separator: true },
       { label: 'Close', run: () => closeDoc(id) },
       {
-        label: 'Close Others',
-        disabled: docs.length < 2,
-        run: async () => {
+        label: 'Close Others', disabled: docs.length < 2, run: async () => {
           for (const other of docs.slice()) {
             if (other.id !== id) await closeDoc(other.id);
           }
         },
       },
     ];
-    for (const item of items) {
-      if (item.separator) {
-        const sep = document.createElement('div');
-        sep.className = 'menu-sep';
-        tabMenu.appendChild(sep);
-        continue;
-      }
-      const btn = document.createElement('button');
-      btn.className = 'menu-item';
-      btn.type = 'button';
-      btn.setAttribute('role', 'menuitem');
-      btn.textContent = item.label;
-      btn.disabled = !!item.disabled;
-      btn.addEventListener('click', () => { closeTabMenu(); item.run(); });
-      tabMenu.appendChild(btn);
-    }
-    // Place it at the cursor, nudged back inside if it would overflow.
-    tabMenu.hidden = false;
-    const rect = tabMenu.getBoundingClientRect();
-    tabMenu.style.left = Math.min(x, window.innerWidth - rect.width - 4) + 'px';
-    tabMenu.style.top = Math.min(y, window.innerHeight - rect.height - 4) + 'px';
   }
 
   tabbar.addEventListener('contextmenu', (e) => {
     const tab = e.target.closest('.tab');
     if (!tab) return;
     e.preventDefault();   // the webview's own menu has nothing useful here
-    openTabMenu(Number(tab.dataset.id), e.clientX, e.clientY);
+    showMenu(tabMenuItems(Number(tab.dataset.id)), e.clientX, e.clientY, tab);
   });
-
-  window.addEventListener('pointerdown', (e) => {
-    if (!tabMenu.hidden && !e.target.closest('#tabMenu')) closeTabMenu();
-  }, true);
-  window.addEventListener('blur', closeTabMenu);
 
   // ---------------- Drag a tab out into its own window ----------------
   // Pointer events rather than HTML5 drag-and-drop: with the pointer captured
@@ -1483,6 +1698,11 @@
       } else {
         typeIntoBlock(text);
       }
+    });
+
+    ta.addEventListener('contextmenu', (e) => {
+      e.preventDefault();   // replace the webview's menu with the app's own
+      showMenu(editorMenuItems(), e.clientX, e.clientY, ta);
     });
 
     ta.addEventListener('keydown', (e) => {
