@@ -34,6 +34,7 @@ function tauriStub(opts) {
       newWindows: [],
       newWindowFails: false,
       handoffDoc: null,
+      clipboardText: '',
     }, ${JSON.stringify(opts || {})});
     const T = () => window.__TAURI_TEST__;
     window.__TAURI__ = {
@@ -95,6 +96,10 @@ function tauriStub(opts) {
         }),
       },
       opener: { openUrl: async (u) => { T().openedUrls.push(u); } },
+      clipboardManager: {
+        readText: async () => T().clipboardText || '',
+        writeText: async (t) => { T().clipboardText = t; },
+      },
     };
   `;
 }
@@ -909,15 +914,15 @@ test('right-clicking a tab offers to move it to a new window', async ({ page }) 
   await boot(page, twoDocs);
   await page.keyboard.press('Control+o');
   await page.locator('.tab').first().click({ button: 'right' });
-  await expect(page.locator('#tabMenu')).toBeVisible();
-  await expect(page.locator('#tabMenu .menu-item').first()).toHaveText('Move to New Window');
+  await expect(page.locator('#ctxMenu')).toBeVisible();
+  await expect(page.locator('#ctxMenu .menu-item').first()).toHaveText('Move to New Window');
 });
 
 test('the context menu moves the document out and closes its tab', async ({ page }) => {
   await boot(page, twoDocs);
   await page.keyboard.press('Control+o');
   await page.locator('.tab').first().click({ button: 'right' });
-  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await page.locator('#ctxMenu .menu-item', { hasText: 'Move to New Window' }).click();
   await expect(page.locator('.tab')).toHaveCount(1);
   const wins = await newWindows(page);
   expect(wins).toHaveLength(1);
@@ -932,7 +937,7 @@ test('unsaved text travels to the new window', async ({ page }) => {
   await page.keyboard.press('Control+o');
   await setEditor(page, '# BBB edited but never saved');
   await page.locator('.tab').nth(1).click({ button: 'right' });
-  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await page.locator('#ctxMenu .menu-item', { hasText: 'Move to New Window' }).click();
   const wins = await newWindows(page);
   expect(wins[0].doc.content).toBe('# BBB edited but never saved');
   expect(wins[0].doc.saved).toContain('BBB');       // the on-disk text
@@ -944,7 +949,7 @@ test('moving out never prompts, because nothing is being discarded', async ({ pa
   await page.keyboard.press('Control+o');
   await setEditor(page, 'dirty');
   await page.locator('.tab').nth(1).click({ button: 'right' });
-  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await page.locator('#ctxMenu .menu-item', { hasText: 'Move to New Window' }).click();
   await expect(page.locator('.tab')).toHaveCount(1);
   expect(await page.evaluate(() => window.__TAURI_TEST__.asks.length)).toBe(0);
 });
@@ -956,14 +961,14 @@ test('a lone document cannot be moved out — it already has its own window', as
     document.getElementById('tabbar').hidden = false;
   });
   await page.locator('.tab').first().click({ button: 'right' });
-  await expect(page.locator('#tabMenu .menu-item').first()).toBeDisabled();
+  await expect(page.locator('#ctxMenu .menu-item').first()).toBeDisabled();
 });
 
 test('the tab stays put if the new window cannot be created', async ({ page }) => {
   await boot(page, { ...twoDocs, newWindowFails: true });
   await page.keyboard.press('Control+o');
   await page.locator('.tab').first().click({ button: 'right' });
-  await page.locator('#tabMenu .menu-item', { hasText: 'Move to New Window' }).click();
+  await page.locator('#ctxMenu .menu-item', { hasText: 'Move to New Window' }).click();
   await expect(page.locator('#toast')).toContainText('Could not open a new window');
   await expect(page.locator('.tab')).toHaveCount(2);   // nothing lost
 });
@@ -1325,3 +1330,119 @@ test('the banner survives read view, which is where it matters most',
     await expect(page.locator('body')).toHaveAttribute('data-view', 'read');
     await expect(page.locator('#readOnlyBanner')).toBeVisible();
   });
+
+// ---------------------------------------------------------------
+// Editor context menu
+// ---------------------------------------------------------------
+
+// Match on the label attribute: an item's text also contains its shortcut hint.
+const menuItem = (page, label) =>
+  page.locator(`#ctxMenu .menu-item[data-label="${label}"]`);
+
+async function openEditorMenu(page, text, selStart, selEnd) {
+  await boot(page);
+  await page.keyboard.press('Control+1');
+  await setEditor(page, text ?? 'hello world', selStart ?? 0, selEnd ?? 0);
+  // Dispatch the event rather than pressing the right button: a real press
+  // moves the caret first (exactly as Windows does when you click outside a
+  // selection), and these tests are about what the menu does to a selection
+  // that is already there.
+  await page.evaluate(() => {
+    const ta = document.getElementById('editor');
+    const r = ta.getBoundingClientRect();
+    ta.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 20,
+    }));
+  });
+  await expect(page.locator('#ctxMenu')).toBeVisible();
+}
+
+test('right-clicking the editor opens the formatting menu', async ({ page }) => {
+  await openEditorMenu(page);
+  for (const label of ['Add link', 'Format', 'Paragraph', 'Insert', 'Cut', 'Copy', 'Paste', 'Select all']) {
+    await expect(menuItem(page, label)).toHaveCount(1);
+  }
+});
+
+test('the Format submenu applies bold to the selection', async ({ page }) => {
+  await openEditorMenu(page, 'make me bold', 5, 7);
+  await menuItem(page, 'Format').hover();
+  await menuItem(page, 'Bold').click();
+  expect(await editorValue(page)).toBe('make **me** bold');
+  await expect(page.locator('#ctxMenu')).toBeHidden();
+});
+
+test('the Paragraph submenu sets a heading and ticks the current one', async ({ page }) => {
+  await openEditorMenu(page, '## Existing heading', 5, 5);
+  await menuItem(page, 'Paragraph').hover();
+  // The line is already an H2, so that entry carries the check.
+  await expect(menuItem(page, 'Heading 2').locator('.menu-check')).toHaveCount(1);
+  await expect(menuItem(page, 'Heading 1').locator('.menu-check')).toHaveCount(0);
+  await menuItem(page, 'Heading 3').click();
+  expect(await editorValue(page)).toBe('### Existing heading');
+});
+
+test('the Paragraph submenu makes a task list', async ({ page }) => {
+  await openEditorMenu(page, 'first\nsecond', 0, 12);
+  await menuItem(page, 'Paragraph').hover();
+  await menuItem(page, 'Task list').click();
+  expect(await editorValue(page)).toBe('- [ ] first\n- [ ] second');
+});
+
+test('the Insert submenu inserts a table', async ({ page }) => {
+  await openEditorMenu(page, '', 0, 0);
+  await menuItem(page, 'Insert').hover();
+  await menuItem(page, 'Table').click();
+  expect(await editorValue(page)).toContain('| Column 1 | Column 2 |');
+});
+
+test('Clear formatting strips inline markers from the selection', async ({ page }) => {
+  const text = 'plain **bold** and *italic* and ~~struck~~ and `code` end';
+  await openEditorMenu(page, text, 0, text.length);
+  await menuItem(page, 'Format').hover();
+  await menuItem(page, 'Clear formatting').click();
+  expect(await editorValue(page)).toBe('plain bold and italic and struck and code end');
+});
+
+test('Cut and Copy are disabled without a selection', async ({ page }) => {
+  await openEditorMenu(page, 'no selection here', 3, 3);
+  await expect(menuItem(page, 'Cut')).toBeDisabled();
+  await expect(menuItem(page, 'Copy')).toBeDisabled();
+  await expect(menuItem(page, 'Paste')).toBeEnabled();
+});
+
+test('Paste inserts the clipboard text at the caret', async ({ page }) => {
+  await boot(page, { clipboardText: 'PASTED' });
+  await page.keyboard.press('Control+1');
+  await setEditor(page, 'ab', 1, 1);
+  await page.evaluate(() => {
+    const ta = document.getElementById('editor');
+    const r = ta.getBoundingClientRect();
+    ta.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 20,
+    }));
+  });
+  await menuItem(page, 'Paste').click();
+  await expect.poll(() => editorValue(page)).toBe('aPASTEDb');
+});
+
+test('Select all selects the whole document', async ({ page }) => {
+  await openEditorMenu(page, 'one\ntwo\nthree', 0, 0);
+  await menuItem(page, 'Select all').click();
+  const sel = await page.evaluate(() => {
+    const ta = document.getElementById('editor');
+    return [ta.selectionStart, ta.selectionEnd, ta.value.length];
+  });
+  expect(sel[0]).toBe(0);
+  expect(sel[1]).toBe(sel[2]);
+});
+
+test('Escape and clicking away both close the menu', async ({ page }) => {
+  await openEditorMenu(page);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#ctxMenu')).toBeHidden();
+  await page.locator('#editor').click({ button: 'right' });
+  await expect(page.locator('#ctxMenu')).toBeVisible();
+  await page.locator('#btn-view-split').click();
+  await expect(page.locator('#ctxMenu')).toBeHidden();
+});
