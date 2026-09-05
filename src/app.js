@@ -85,7 +85,9 @@
       savedContent: content || '',
       editorScroll: 0,
       previewScroll: 0,
+      liveScroll: 0,
       html: null,       // cached render; null means stale
+      groups: null,     // cached live-view block map; null means stale
       dirtyShown: null, // last dirty state drawn in the tab strip
       el: null,
     };
@@ -108,16 +110,20 @@
     if (!d || !editor) return;
     const view = document.body.dataset.view;
     d.content = editor.value;
-    if (view !== 'read') d.editorScroll = editor.scrollTop;
-    if (view !== 'edit') d.previewScroll = previewPane.scrollTop;
+    // In live view the editor is a peephole scrolled to the caret's block and
+    // the pane does the scrolling, so neither value means what it does elsewhere.
+    if (view === 'live') d.liveScroll = editorPane.scrollTop;
+    else if (view !== 'read') d.editorScroll = editor.scrollTop;
+    if (view === 'split' || view === 'read') d.previewScroll = previewPane.scrollTop;
   }
 
   function restoreScrollPositions() {
     const d = activeDoc();
     if (!d) return;
     const view = document.body.dataset.view;
-    if (view !== 'read' && editor) editor.scrollTop = d.editorScroll;
-    if (view !== 'edit') previewPane.scrollTop = d.previewScroll;
+    if (view === 'live') editorPane.scrollTop = d.liveScroll;
+    else if (view !== 'read' && editor) editor.scrollTop = d.editorScroll;
+    if (view === 'split' || view === 'read') previewPane.scrollTop = d.previewScroll;
   }
 
   // Focus belongs wherever the user can act: the editor, or the reading pane
@@ -208,7 +214,8 @@
   let renderTimer = null;
   function scheduleRender() {
     const d = activeDoc();
-    if (d) d.html = null;
+    if (d) { d.html = null; d.groups = null; }
+    if (liveOn()) { liveSchedule(); return; }
     if (document.body.dataset.view === 'edit') return; // render lazily when preview becomes visible
     clearTimeout(renderTimer);
     renderTimer = setTimeout(() => { if (previewStale()) renderPreview(false); }, 120);
@@ -278,6 +285,7 @@
 
   function showDoc(d) {
     if (editor && editor !== d.el) {
+      liveUnstyle(editor);   // live view leaves geometry on the element it used
       editor.hidden = true;
       editor.removeAttribute('id');
     }
@@ -294,7 +302,8 @@
     const d = docs.find((x) => x.id === id);
     if (!d) return;
     showDoc(d);
-    if (document.body.dataset.view !== 'edit') renderPreview(true);
+    if (liveOn()) liveSync();
+    else if (document.body.dataset.view !== 'edit') renderPreview(true);
     renderTabs(true);
     updateTitle();
     updateHeadingSelect();
@@ -325,7 +334,8 @@
     docs.push(doc);
     showDoc(doc);
     previewPane.scrollTop = 0;
-    if (document.body.dataset.view !== 'edit') renderPreview(false);
+    if (liveOn()) liveSync();
+    else if (document.body.dataset.view !== 'edit') renderPreview(false);
     renderTabs(true);
     updateTitle();
     updateHeadingSelect();
@@ -778,7 +788,7 @@
 
   // ---------------- Views ----------------
 
-  const VIEWS = ['edit', 'split', 'read'];
+  const VIEWS = ['edit', 'split', 'read', 'live'];
 
   function setView(view) {
     if (!VIEWS.includes(view)) return;
@@ -789,7 +799,9 @@
     for (const v of VIEWS) {
       document.getElementById('btn-view-' + v).classList.toggle('active', v === view);
     }
-    if (view !== 'edit' && previewStale()) renderPreview(prev === 'edit');
+    if (prev === 'live' && view !== 'live') liveUnstyle(editor);
+    if (view === 'live') liveSync();
+    else if (view !== 'edit' && previewStale()) renderPreview(prev === 'edit');
     restoreFocus();
     restoreScrollPositions();
   }
@@ -1410,6 +1422,406 @@
 
   window.addEventListener('resize', () => { if (block) renderBlock(); });
 
+  // ---------------- Live view ----------------
+  // The document rendered, with the block the caret is in opened back into raw
+  // Markdown — Obsidian's live preview, built from the pieces already here.
+  //
+  // The textarea is never moved, re-parented, or assigned .value:
+  // docs/live-preview-notes.md records that re-parenting a textarea destroys
+  // its native undo stack, which rules out any design where an editor migrates
+  // to the block being edited. Instead the textarea is shrunk to a peephole —
+  // positioned over the gap the active block leaves behind, as tall as that
+  // block's source lines, and scrolled internally so exactly those lines show.
+  // You are always typing into a real textarea holding the whole document, so
+  // undo, IME, spellcheck, the toolbar and every hotkey work untouched, and the
+  // caret is never anywhere but in source text: there is no caret-in-rendered-
+  // DOM mapping to get wrong. Only clicks need mapping, and only one way.
+
+  const liveLayer = document.getElementById('liveLayer');
+
+  let liveShown = [];      // the groups currently in the DOM, with their elements
+  let liveGaps = [];       // block elements currently opened as the gap
+  let liveDocId = null;    // whose blocks those are
+  let liveLines = -1;      // line count the column in the DOM was built from
+  let liveFrame = 0;       // pending rAF, so a burst of events lays out once
+  let liveTimer = null;    // deferred rebuild of the rendered column
+
+  function liveOn() { return document.body.dataset.view === 'live'; }
+
+  // Cut the token stream into top-level blocks, each carrying the source lines
+  // it came from. markdown-it hands us token.map for free; the work is grouping
+  // nested tokens back under their opener, and covering the lines no token
+  // claims, so every line of the document belongs to exactly one block.
+  function liveBuild(d) {
+    if (d.groups) return d.groups;
+    const env = { basePath: d.path };
+    const lines = d.content.split('\n');
+    const toks = md.parse(d.content, env);
+    const mapped = [];
+    const trailing = [];   // footnote definitions: moved to the end, no map
+    let depth = 0;
+    let cur = null;
+    for (const t of toks) {
+      if (!cur) cur = { from: null, to: null, toks: [] };
+      cur.toks.push(t);
+      if (t.map) {
+        if (cur.from === null || t.map[0] < cur.from) cur.from = t.map[0];
+        if (cur.to === null || t.map[1] > cur.to) cur.to = t.map[1];
+      }
+      depth += t.nesting;
+      if (depth <= 0) {
+        (cur.from === null ? trailing : mapped).push(cur);
+        cur = null;
+        depth = 0;
+      }
+    }
+    if (cur) (cur.from === null ? trailing : mapped).push(cur);
+
+    // Rendering every block again on every keystroke is what makes this
+    // expensive on a long document, and all but one block is unchanged. Keyed
+    // by source text, so a block that merely moved down a line is still a hit.
+    // Footnotes number themselves from their position in the document, so a
+    // document using them renders in full rather than from stale numbering.
+    const reuse = env.footnotes ? null : (d.groupCache || new Map());
+    const cache = new Map();
+    const groups = [];
+    const add = (from, to, toks) => {
+      let html = '';
+      if (toks && from === null) {
+        html = md.renderer.render(toks, md.options, env);   // footnote tail: no lines to key on
+      } else if (toks) {
+        const key = lines.slice(from, to).join('\n');
+        html = reuse ? reuse.get(key) : undefined;
+        if (html === undefined) html = md.renderer.render(toks, md.options, env);
+        cache.set(key, html);
+      }
+      groups.push({ from, to, html, el: null });
+    };
+    let line = 0;
+    for (const g of mapped) {
+      // A list swallows the blank line that follows it. Left in, that line
+      // would open a gap taller than the source it reveals.
+      let to = g.to;
+      while (to > g.from + 1 && !lines[to - 1].trim()) to -= 1;
+      if (g.from > line) add(line, g.from, null);   // blank lines between blocks
+      add(g.from, to, g.toks);
+      line = to;
+    }
+    if (line < lines.length) add(line, lines.length, null);
+    for (const g of trailing) add(null, null, g.toks);
+    d.groupCache = env.footnotes ? null : cache;
+    d.groups = groups;
+    return groups;
+  }
+
+  // Replace only the blocks whose HTML actually changed. Rebuilding the column
+  // on every keystroke would restart every image load and lose the reveal.
+  function livePatch(groups) {
+    const prev = liveShown;
+    let a = 0;
+    while (a < prev.length && a < groups.length && prev[a].html === groups[a].html) {
+      groups[a].el = prev[a].el;
+      a += 1;
+    }
+    let b = 0;
+    while (a + b < prev.length && a + b < groups.length &&
+           prev[prev.length - 1 - b].html === groups[groups.length - 1 - b].html) {
+      groups[groups.length - 1 - b].el = prev[prev.length - 1 - b].el;
+      b += 1;
+    }
+    for (let i = a; i < prev.length - b; i++) prev[i].el.remove();
+    const anchor = b > 0 ? groups[groups.length - b].el : null;
+    const frag = document.createDocumentFragment();
+    for (let i = a; i < groups.length - b; i++) {
+      const el = document.createElement('div');
+      el.className = 'live-block';
+      el.innerHTML = groups[i].html;
+      // Rendered task boxes come out disabled, which also makes them unclickable.
+      // Ticking one off without leaving the rendered view is the whole point here.
+      for (const box of el.querySelectorAll('input.task-list-item-checkbox')) {
+        box.disabled = false;
+      }
+      groups[i].el = el;
+      frag.appendChild(el);
+    }
+    liveLayer.insertBefore(frag, anchor);
+    liveShown = groups;
+  }
+
+  function liveCloseGaps() {
+    for (const el of liveGaps) {
+      el.classList.remove('live-gap');
+      el.style.height = '';
+    }
+    liveGaps = [];
+  }
+
+  // Undo everything live view does to a textarea, so it can go back to being
+  // an ordinary full-pane editor.
+  function liveUnstyle(ta) {
+    liveCloseGaps();
+    if (!ta) return;
+    ta.style.top = '';
+    ta.style.height = '';
+    ta.style.display = '';
+    ta.scrollTop = 0;
+  }
+
+  const liveIndexAt = (groups, line) => groups.findIndex(
+    (g) => g.from !== null && line >= g.from && line < g.to
+  );
+
+  function lineIndexAt(starts, offset) {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= offset) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  // Open the caret's block (or every block the selection touches) and put the
+  // editor over the hole it leaves.
+  function liveLayout() {
+    const groups = liveShown;
+    if (!editor || !groups.length) return;
+    const text = editor.value;
+    const starts = lineStarts(text);
+    let i0 = liveIndexAt(groups, lineIndexAt(starts, editor.selectionStart));
+    let i1 = liveIndexAt(groups, lineIndexAt(starts, editor.selectionEnd));
+    if (i0 < 0) i0 = i1;
+    if (i1 < 0) i1 = i0;
+    if (i0 < 0) { liveCloseGaps(); editor.style.display = 'none'; return; }
+    if (i1 < i0) { const t = i0; i0 = i1; i1 = t; }
+
+    // Heights come from #selMirror, the same oracle column selection measures
+    // against, so soft wrap and tabs are answered by the layout engine that
+    // draws the real text rather than by arithmetic. syncMirror() offsets the
+    // mirror by the editor's own scroll, and every number below is a difference
+    // between two of its rects, so that offset cancels out.
+    syncMirror();
+    const node = selMirror.firstChild;
+    const mirrorTop = selMirror.getBoundingClientRect().top;
+    const lineH = parseFloat(getComputedStyle(selMirror).lineHeight) || 16;
+    // A Range reports the glyph box, which sits inside the line box by half the
+    // leading at each end. Every position here has to be a line-box edge, or
+    // the revealed source is drawn a few pixels above the hole it belongs in.
+    const lead = node
+      ? Math.max(0, (lineH - (charRect(0, 0).height || lineH)) / 2)
+      : 0;
+    let textBottom = 0;
+    if (node) {
+      const all = document.createRange();
+      all.selectNodeContents(selMirror);
+      textBottom = all.getBoundingClientRect().bottom - mirrorTop + lead;
+    }
+    // The final line, when empty, has no glyph to measure and neither does the
+    // position just past the last line; both step down from the text's bottom.
+    const lastEmpty = starts[starts.length - 1] >= text.length;
+    const lineTop = (n) => {
+      if (!node) return n * lineH;
+      if (n < starts.length && !(lastEmpty && n === starts.length - 1)) {
+        return charRect(n, 0).top - mirrorTop - lead;
+      }
+      return textBottom + (lastEmpty && n >= starts.length ? lineH : 0);
+    };
+
+    liveCloseGaps();
+    const tops = [];
+    for (let i = i0; i <= i1; i++) tops.push(lineTop(groups[i].from));
+    tops.push(lineTop(groups[i1].to));
+    for (let i = i0; i <= i1; i++) {
+      const el = groups[i].el;
+      el.classList.add('live-gap');
+      el.style.height = Math.max(1, tops[i - i0 + 1] - tops[i - i0]) + 'px';
+      liveGaps.push(el);
+    }
+
+    const top = tops[0];
+    const bottom = tops[tops.length - 1];
+    const paneTop = editorPane.getBoundingClientRect().top;
+    // Reading the gap's position flushes the heights just written.
+    const gapTop = groups[i0].el.getBoundingClientRect().top - paneTop + editorPane.scrollTop;
+    editor.style.display = '';
+    editor.style.top = gapTop + 'px';
+    editor.style.height = Math.max(lineH, bottom - top) + 'px';
+    editor.scrollTop = top;
+  }
+
+  function liveSync() {
+    if (!liveOn()) return;
+    const d = activeDoc();
+    if (!d) return;
+    if (liveDocId !== d.id) {
+      liveLayer.textContent = '';
+      liveShown = [];
+      liveGaps = [];
+      liveDocId = d.id;
+    }
+    livePatch(liveBuild(d));
+    liveLines = countLines(d.content);
+    liveLayout();
+  }
+
+  const countLines = (text) => {
+    let n = 1;
+    for (let i = 0; i < text.length; i++) if (text[i] === '\n') n += 1;
+    return n;
+  };
+
+  // Typing inside a block changes only that block, and that block is the gap —
+  // hidden behind the editor, so nobody can see it go stale. Re-laying out the
+  // hole is cheap and has to happen now (the text wraps as you type); rendering
+  // the column again is not, and can wait for a pause. Adding or removing a
+  // line moves every block below, so that case rebuilds at once.
+  function liveSchedule() {
+    if (!liveOn() || liveFrame) return;
+    liveFrame = requestAnimationFrame(() => {
+      liveFrame = 0;
+      if (!liveOn()) return;
+      const d = activeDoc();
+      if (!d || !editor) return;
+      if (d.id !== liveDocId || countLines(editor.value) !== liveLines) {
+        clearTimeout(liveTimer);
+        liveSync();
+        return;
+      }
+      liveLayout();
+      clearTimeout(liveTimer);
+      liveTimer = setTimeout(() => { if (liveOn()) liveSync(); }, 150);
+    });
+  }
+
+  // ---- Clicking rendered content ----
+
+  function caretFromPoint(x, y) {
+    if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(x, y);
+      return r ? { node: r.startContainer, offset: r.startOffset } : null;
+    }
+    if (document.caretPositionFromPoint) {
+      const p = document.caretPositionFromPoint(x, y);
+      return p ? { node: p.offsetNode, offset: p.offset } : null;
+    }
+    return null;
+  }
+
+  // Where in a block's source a click on its rendered form landed. Rendered
+  // text is very nearly the source with the markup taken out, so walking the
+  // two together and skipping the characters that did not survive rendering
+  // arrives at the right offset. Emoji, footnote markers and {.attrs} break
+  // that assumption; when too little of the prefix matches, say so rather than
+  // land the caret somewhere arbitrary — the caller drops to the block start,
+  // which is off by a line or two instead of off by a paragraph.
+  function liveAlign(el, x, y, src) {
+    const pos = caretFromPoint(x, y);
+    if (!pos || !el.contains(pos.node)) return null;
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let prefix = '';
+    let node = null;
+    while ((node = walk.nextNode())) {
+      if (node === pos.node) { prefix += node.data.slice(0, pos.offset); break; }
+      prefix += node.data;
+    }
+    if (!node) return null;
+    let at = 0;
+    let hit = 0;
+    for (let i = 0; i < prefix.length; i++) {
+      let j = at;
+      while (j < src.length && src[j] !== prefix[i]) j += 1;
+      if (j >= src.length) break;
+      at = j + 1;
+      hit += 1;
+    }
+    return hit >= prefix.length * 0.8 ? at : null;
+  }
+
+  // Source offsets of a group's first and last line.
+  function liveSpan(g, text, starts) {
+    const from = starts[Math.min(g.from, starts.length - 1)];
+    const to = g.to < starts.length ? starts[g.to] : text.length;
+    return { from, to };
+  }
+
+  function liveGroupOf(el) {
+    const block = el && el.closest ? el.closest('.live-block') : null;
+    return block ? liveShown.find((g) => g.el === block) || null : null;
+  }
+
+  function livePlaceCaret(e) {
+    const g = liveGroupOf(e.target);
+    if (!g || g.from === null || !editor) return;
+    const text = editor.value;
+    const span = liveSpan(g, text, lineStarts(text));
+    const off = liveAlign(g.el, e.clientX, e.clientY, text.slice(span.from, span.to));
+    const at = span.from + (off === null ? 0 : off);
+    editor.setSelectionRange(at, at);
+    liveSync();          // put the peephole over this block before focusing it
+    editor.focus();
+  }
+
+  // Ticking a box off is the one edit worth making without leaving the rendered
+  // view, so the caret stays where it was rather than following the change.
+  function liveToggleTask(box) {
+    const g = liveGroupOf(box);
+    if (!g || g.from === null || !editor) return;
+    const boxes = Array.from(g.el.querySelectorAll('input.task-list-item-checkbox'));
+    const nth = boxes.indexOf(box);
+    const text = editor.value;
+    const starts = lineStarts(text);
+    const selStart = editor.selectionStart;
+    const selEnd = editor.selectionEnd;
+    let seen = -1;
+    for (let line = g.from; line < g.to && line < starts.length; line++) {
+      const s = starts[line];
+      const m = /^(\s*(?:[-*+]|\d+[.)])\s+\[)([ xX])\]/.exec(
+        text.slice(s, lineEndAt(text, starts, line))
+      );
+      if (!m) continue;
+      seen += 1;
+      if (seen !== nth) continue;
+      const at = s + m[1].length;
+      replaceRange(at, at + 1, m[2] === ' ' ? 'x' : ' ', selStart, selEnd);
+      return;
+    }
+  }
+
+  liveLayer.addEventListener('click', (e) => {
+    if (!liveOn()) return;
+    const box = e.target.closest('input.task-list-item-checkbox');
+    if (box) {
+      e.preventDefault();   // the source is the truth; the box redraws from it
+      liveToggleTask(box);
+      return;
+    }
+    // Obsidian's rule: a plain click is for editing the link text, Ctrl+click
+    // follows it. Otherwise a link would be the one thing you cannot edit.
+    const link = e.target.closest('a[href]');
+    if (link) {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) { handleRenderedClick(e, liveLayer); return; }
+    }
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return;   // a drag to select text, not a click
+    livePlaceCaret(e);
+  });
+
+  // Right-clicking rendered text puts the caret there first, so the formatting
+  // menu acts on what was clicked rather than on wherever the caret last was.
+  liveLayer.addEventListener('contextmenu', (e) => {
+    if (!liveOn() || !editor) return;
+    e.preventDefault();
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) livePlaceCaret(e);
+    showMenu(editorMenuItems(), e.clientX, e.clientY, editor);
+  });
+
+  document.addEventListener('selectionchange', () => {
+    if (!liveOn() || !editor || document.activeElement !== editor) return;
+    liveSchedule();
+  });
+
   // ---------------- File operations ----------------
 
   async function openPath(path, options) {
@@ -1434,7 +1846,9 @@
     // An explicit "new tab" always makes one, even from a blank document —
     // reusing the placeholder here would make Ctrl+T look broken.
     addDoc(null, '', { replaceDisposable: false });
-    setView('edit');
+    // A blank document has nothing to read, so read view gives way — but split
+    // and live are editing views, and a new tab should not pull you out of one.
+    if (!editingVisible()) setView('edit');
   }
 
   async function fileOpen() {
@@ -1587,6 +2001,7 @@
   on('btn-view-edit', () => setView('edit'));
   on('btn-view-split', () => setView('split'));
   on('btn-view-read', () => setView('read'));
+  on('btn-view-live', () => setView('live'));
   on('btn-theme', cycleTheme);
   on('btn-help', () => toggleHelp());
   on('btn-help-close', () => toggleHelp(false));
@@ -1625,6 +2040,14 @@
       ta.addEventListener(ev, updateHeadingSelect)
     );
 
+    // Live view's reveal follows the caret. selectionchange alone is not enough
+    // to drive it: the browser throttles that event and coalesces a run of
+    // arrow keys into one, which would leave the reveal several lines behind.
+    // These fire per keystroke; liveSchedule() coalesces them into one layout.
+    ['keydown', 'keyup', 'pointerup', 'focus'].forEach((ev) =>
+      ta.addEventListener(ev, () => liveSchedule())
+    );
+
     ta.addEventListener('scroll', () => {
       if (ta !== editor) return;
       syncScroll(ta, previewPane);
@@ -1636,6 +2059,9 @@
       if (e.button !== 0) return;
       if (e.altKey) {
         e.preventDefault();   // otherwise the textarea starts its own selection
+        // A rectangle across rendered blocks has no meaning in source terms,
+        // and the peephole only exposes one block's worth of text to drag over.
+        if (liveOn()) { showToast('Column selection needs Edit view (Ctrl+1)'); return; }
         beginBlockDrag(e);
       } else {
         clearBlock();
@@ -1769,6 +2195,7 @@
         case 'Digit1': e.preventDefault(); setView('edit'); return;
         case 'Digit2': e.preventDefault(); setView('split'); return;
         case 'Digit3': e.preventDefault(); setView('read'); return;
+        case 'Digit4': e.preventDefault(); setView('live'); return;
       }
     }
 
