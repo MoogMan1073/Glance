@@ -1,6 +1,6 @@
 [package]
 name = "glance"
-version = "0.6.0"
+version = "0.6.1"
 description = "Glance — fast, minimal Markdown reader and editor"
 authors = ["DSI Innovations, LLC"]
 license = "0BSD"

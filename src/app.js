@@ -1746,12 +1746,17 @@
   // which is off by a line or two instead of off by a paragraph.
   function liveAlign(el, x, y, src) {
     const pos = caretFromPoint(x, y);
-    if (!pos || !el.contains(pos.node)) return null;
+    if (!pos) return null;
+    return liveAlignNode(el, pos.node, pos.offset, src);
+  }
+
+  function liveAlignNode(el, target, offset, src) {
+    if (!target || !el.contains(target)) return null;
     const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     let prefix = '';
     let node = null;
     while ((node = walk.nextNode())) {
-      if (node === pos.node) { prefix += node.data.slice(0, pos.offset); break; }
+      if (node === target) { prefix += node.data.slice(0, offset); break; }
       prefix += node.data;
     }
     if (!node) return null;
@@ -1777,6 +1782,32 @@
   function liveGroupOf(el) {
     const block = el && el.closest ? el.closest('.live-block') : null;
     return block ? liveShown.find((g) => g.el === block) || null : null;
+  }
+
+  // A DOM selection endpoint, as a source offset.
+  function liveOffsetOfNode(node, offset) {
+    const g = liveGroupOf(node.nodeType === 1 ? node : node.parentNode);
+    if (!g || g.from === null || !editor) return null;
+    const text = editor.value;
+    const span = liveSpan(g, text, lineStarts(text));
+    const at = liveAlignNode(g.el, node, offset, text.slice(span.from, span.to));
+    return span.from + (at === null ? 0 : at);
+  }
+
+  // Dragging across rendered text selects it on screen, but the browser's
+  // selection is in HTML the editor knows nothing about: without this the
+  // highlight would be real while editor.selectionStart === selectionEnd, and
+  // Ctrl+B would silently do nothing. Convert it into the editor's own
+  // selection, which opens every block it touches as source.
+  function liveSelectFromDom(sel) {
+    if (!editor) return;
+    const a = liveOffsetOfNode(sel.anchorNode, sel.anchorOffset);
+    const b = liveOffsetOfNode(sel.focusNode, sel.focusOffset);
+    if (a === null || b === null || a === b) return;
+    sel.removeAllRanges();
+    editor.setSelectionRange(Math.min(a, b), Math.max(a, b));
+    liveSync();
+    editor.focus();
   }
 
   function livePlaceCaret(e) {
@@ -1833,7 +1864,8 @@
       if (e.ctrlKey || e.metaKey) { handleRenderedClick(e, liveLayer); return; }
     }
     const sel = window.getSelection();
-    if (sel && !sel.isCollapsed) return;   // a drag to select text, not a click
+    // A drag rather than a click: carry the selection over to the editor.
+    if (sel && !sel.isCollapsed) { liveSelectFromDom(sel); return; }
     livePlaceCaret(e);
   });
 
