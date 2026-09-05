@@ -21,6 +21,8 @@ reading it in well under a second.
 - **Column selection** — Alt+drag selects a rectangle, like Notepad++ and the
   code editors. Drag down for a cursor on every line and type a prefix onto
   all of them at once; the whole edit undoes in one step.
+- **Right-click menu** — Obsidian-style formatting menu in the editor, with
+  Format / Paragraph / Insert submenus, plus the usual clipboard actions.
 - **Word-like toolbar** — headings, bold, italic, strikethrough, highlight,
   inline code, code blocks, links, images, blockquotes, bulleted / numbered /
   checkbox lists, tables, horizontal rules.
