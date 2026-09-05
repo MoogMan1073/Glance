@@ -37,3 +37,77 @@ Two consequences:
 Preserving undo across a moving editor therefore means writing an undo manager,
 which is a substantial piece of work and a behaviour-compatibility risk in its
 own right.
+
+## What was built, and why this shape
+
+Four designs were worked up independently and three came back having converged
+on the same architecture from opposite starting points, including the one
+briefed to argue for `contenteditable`. That shape is what shipped:
+
+> Keep the per-document textarea holding the whole document and never move it.
+> Render the document as a column of blocks around it, leave a gap where the
+> caret's block is, and put the textarea over that gap.
+
+The caret is therefore never anywhere but in source text. There is no
+caret-in-rendered-DOM position to map, no HTML to serialise back to Markdown,
+and no undo stack to reimplement — the textarea's contract with the rest of
+`app.js` is byte-for-byte what it was, which is why all 95 tests that existed
+before this feature pass unmodified.
+
+The textarea is sized to the gap and scrolled internally, rather than left at
+full height and clipped. Two reasons, both measured:
+
+- A full-height textarea (tens of thousands of pixels on a long document)
+  is inside the pane's scrollable overflow and stretches its scroll range.
+- Chromium keeps a programmatically-set `scrollTop` even when the caret is
+  moved far outside the visible strip — `setSelectionRange` does not scroll.
+  So the peephole stays pinned, and only real caret keys can disturb it.
+
+### CodeMirror 6 was checked, not assumed
+
+Obsidian avoids the two-layout problem because CM6 owns the layout of both
+states. It cannot be borrowed here without a build step:
+
+| Route | Result |
+| --- | --- |
+| jsDelivr `+esm` | 1.5 KB of network `import`s — blocked by our CSP (`script-src 'self'`) |
+| esm.sh `?bundle` | Two files, 377 KB + 459 KB, each inlining its own `@codemirror/state` → CM6's duplicate-instance throw |
+| `paul-norman` prebuilt IIFE | 585 KB, no `WidgetType` / `ViewPlugin` / `syntaxTree` — a highlighting build |
+| `RPGillespie6` prebuilt IIFE | 415 KB, three exported functions, no Markdown language |
+
+Vendoring CM6 properly would mean running Rollup ourselves, roughly doubling
+the vendor payload in a launch-speed-first app, and adding a second Markdown
+parser (Lezer) that disagrees with markdown-it about footnotes, definition
+lists, `==mark==`, `^sup^`, `~sub~`, `{.attrs}` and emoji — so Live view and
+Read view would render the same file differently.
+
+### The cost, measured
+
+Per keystroke, live view versus the same edit in Edit view, Chromium:
+
+| Document | Blocks | Added per keystroke |
+| --- | --- | --- |
+| 70 lines | 59 | none measurable |
+| 420 lines | 360 | none measurable |
+| 2,100 lines | 1,800 | ~11 ms |
+| 6,300 lines | 5,400 | ~40 ms |
+
+Typing inside a block changes only that block, and that block is the gap —
+hidden behind the editor, where nobody can see it go stale. So a keystroke
+re-lays-out the hole immediately (cheap) and defers re-rendering the column by
+150 ms; adding or removing a line moves every block below it and rebuilds at
+once. Without that split the 2,100-line case cost ~23 ms and the cache made no
+difference, because the expense is `md.parse` plus writing the whole document
+into `#selMirror`, not the block rendering.
+
+### Known limits
+
+- Reveal is per block, not per inline range: editing one word of a paragraph
+  shows the whole paragraph as source. Obsidian unwraps individual markers.
+- The open block is plain monospace — no syntax colouring while you type.
+- Column selection is not available in live view; a rectangle spanning
+  rendered blocks has no meaning in source terms.
+- Click-to-caret aligns rendered text against source by skipping the
+  characters that did not survive rendering. Emoji, footnote markers and
+  `{.attrs}` break that assumption, so a confidence check falls back to the
+  start of the block rather than guessing.

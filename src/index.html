@@ -95,6 +95,10 @@
         <svg viewBox="0 0 16 16"><path d="M8 3C4.5 3 1.7 5.1.5 8c1.2 2.9 4 5 7.5 5s6.3-2.1 7.5-5C14.3 5.1 11.5 3 8 3zm0 8.5A3.5 3.5 0 1 1 8 4.5a3.5 3.5 0 0 1 0 7zM8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
         <span>Read</span>
       </button>
+      <button class="tb-btn tb-view" id="btn-view-live" title="Live view (Ctrl+4)" aria-label="Live view">
+        <svg viewBox="0 0 16 16"><path d="M2 2.8h12v1.4H2zm0 2.9h7.5v1.4H2zm0 5.9h9v1.4H2z"/><path d="M2 8.4h12v2.2H2V8.4zm1.2 1.2v.6h9.6v-.6H3.2z"/></svg>
+        <span>Live</span>
+      </button>
     </div>
 
     <div class="tb-sep"></div>
@@ -130,6 +134,9 @@
     <!-- One textarea per open document, created by app.js. Each keeps its own
          native undo stack and scroll position; the active one carries id="editor". -->
     <section id="editorPane">
+      <!-- Live view only: the document rendered block by block, with a gap
+           left where the caret is. The editor is positioned over that gap. -->
+      <div id="liveLayer" class="markdown-body" aria-hidden="true"></div>
       <!-- Geometry oracle for column selection: lays out the same text with the
            same typography, so a Range over it reports where a character sits. -->
       <div id="selMirror" aria-hidden="true"></div>

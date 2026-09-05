@@ -1446,3 +1446,177 @@ test('Escape and clicking away both close the menu', async ({ page }) => {
   await page.locator('#btn-view-split').click();
   await expect(page.locator('#ctxMenu')).toBeHidden();
 });
+
+// ---------------------------------------------------------------
+// Live view
+// ---------------------------------------------------------------
+
+const LIVE_DOC = '# Title\n\nFirst paragraph here.\n\n- [ ] Sam B.\n- [x] Done\n\nLast paragraph.\n';
+
+// Open a document in live view with the caret at `caret`.
+async function live(page, text, caret) {
+  await boot(page);
+  await setEditor(page, text === undefined ? LIVE_DOC : text, caret ?? 0);
+  await page.keyboard.press('Control+4');
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'live');
+  await page.waitForFunction(() => document.querySelector('#liveLayer .live-gap') !== null);
+}
+
+// Which block is opened as raw source, and whether the editor sits exactly
+// over the hole it left. A non-zero offset means the two layouts disagree.
+// The reveal is laid out on an animation frame, so wait for one first.
+const liveState = (page) =>
+  page.evaluate(async () => {
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const layer = document.getElementById('liveLayer');
+    const ed = document.getElementById('editor');
+    const gaps = Array.from(layer.querySelectorAll('.live-gap'));
+    return {
+      blocks: layer.children.length,
+      gapIndex: gaps.length ? Array.from(layer.children).indexOf(gaps[0]) : null,
+      gapCount: gaps.length,
+      offset: gaps.length
+        ? Math.round(ed.getBoundingClientRect().top - gaps[0].getBoundingClientRect().top)
+        : null,
+      caret: ed.selectionStart,
+    };
+  });
+
+test('live view renders the document and opens the caret’s block as source', async ({ page }) => {
+  await live(page);
+  // Everything but the open block is rendered markdown.
+  await expect(page.locator('#liveLayer h1')).toHaveText('Title');
+  await expect(page.locator('#liveLayer ul.contains-task-list li')).toHaveCount(2);
+  const s = await liveState(page);
+  expect(s.gapIndex).toBe(0);      // the caret is on line 0, the heading
+  expect(s.offset).toBe(0);        // editor lands exactly in the hole
+});
+
+test('moving the caret moves which block is open', async ({ page }) => {
+  await live(page);
+  const seen = [];
+  for (let i = 0; i < 6; i++) {
+    seen.push(await liveState(page));
+    await page.keyboard.press('ArrowDown');
+  }
+  // The reveal walks down with the caret, and never drifts off its hole.
+  expect(seen.map((s) => s.gapIndex)).toEqual([0, 1, 2, 3, 4, 4]);
+  expect(seen.every((s) => s.offset === 0)).toBe(true);
+});
+
+test('a selection spanning blocks opens all of them', async ({ page }) => {
+  await live(page, LIVE_DOC, 0);
+  await page.evaluate(() => {
+    const ed = document.getElementById('editor');
+    ed.setSelectionRange(2, 30);
+    document.dispatchEvent(new Event('selectionchange'));
+  });
+  await expect
+    .poll(async () => (await liveState(page)).gapCount)
+    .toBeGreaterThan(1);
+});
+
+test('typing in live view edits the document', async ({ page }) => {
+  await live(page);
+  await page.keyboard.press('End');
+  await page.keyboard.type(' here');
+  expect((await editorValue(page)).split('\n')[0]).toBe('# Title here');
+  expect((await liveState(page)).offset).toBe(0);
+});
+
+test('clicking rendered text puts the caret at that word', async ({ page }) => {
+  await live(page);
+  const at = await page.evaluate(() => {
+    const p = Array.from(document.querySelectorAll('#liveLayer p'))
+      .find((el) => el.textContent.startsWith('Last'));
+    const r = document.createRange();
+    r.setStart(p.firstChild, 14);   // between "paragraph" and "."
+    r.collapse(true);
+    const box = r.getBoundingClientRect();
+    return { x: box.left, y: box.top + box.height / 2 };
+  });
+  await page.mouse.click(at.x, at.y);
+  const s = await liveState(page);
+  const value = await editorValue(page);
+  expect(value.slice(s.caret - 9, s.caret)).toBe('paragraph');
+  expect(s.gapIndex).toBe(6);   // and that block is now the open one
+});
+
+test('ticking a checkbox edits the source without moving the caret', async ({ page }) => {
+  await live(page);
+  await page.locator('#liveLayer input.task-list-item-checkbox').first().click();
+  await expect
+    .poll(async () => (await editorValue(page)).split('\n')[4])
+    .toBe('- [x] Sam B.');
+  const s = await liveState(page);
+  expect(s.caret).toBe(0);      // the reading position is left alone
+  expect(s.gapIndex).toBe(0);
+});
+
+test('links open on Ctrl+click and place the caret on a plain click', async ({ page }) => {
+  // The caret sits in the first block, so the second one stays rendered.
+  await live(page, 'Somewhere else.\n\nText with a [link](https://example.com/x) here.\n', 0);
+  await page.locator('#liveLayer a[href]').click({ modifiers: ['Control'] });
+  expect(await page.evaluate(() => window.__TAURI_TEST__.openedUrls))
+    .toEqual(['https://example.com/x']);
+  // A plain click edits the link text instead of following it.
+  await page.keyboard.press('Control+1');
+  await page.keyboard.press('Control+4');
+  await page.locator('#liveLayer a[href]').click();
+  expect(await page.evaluate(() => window.__TAURI_TEST__.openedUrls))
+    .toEqual(['https://example.com/x']);
+  const s = await liveState(page);
+  expect(s.gapIndex).toBe(2);   // that block opened for editing instead
+});
+
+test('leaving live view gives the editor back its full size', async ({ page }) => {
+  await live(page);
+  await page.keyboard.press('Control+1');
+  const s = await page.evaluate(() => {
+    const ed = document.getElementById('editor');
+    return {
+      inline: ed.getAttribute('style') || '',
+      gaps: document.querySelectorAll('#liveLayer .live-gap').length,
+      tall: ed.getBoundingClientRect().height > 200,
+    };
+  });
+  expect(s.inline).toBe('');
+  expect(s.gaps).toBe(0);
+  expect(s.tall).toBe(true);
+});
+
+test('live view follows a tab switch', async ({ page }) => {
+  await live(page);
+  await page.keyboard.press('Control+t');
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'live');
+  await setEditor(page, '## Second document\n');
+  await expect(page.locator('#liveLayer')).toHaveText(/Second document|## Second/);
+  await page.keyboard.press('Alt+1');
+  await expect(page.locator('#liveLayer h1')).toHaveText('Title');
+});
+
+test('column selection says where it lives instead of doing nothing', async ({ page }) => {
+  await live(page);
+  const box = await page.locator('#editor').boundingBox();
+  await page.keyboard.down('Alt');
+  await page.mouse.move(box.x + 10, box.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 40, box.y + 5);
+  await page.mouse.up();
+  await page.keyboard.up('Alt');
+  await expect(page.locator('#toast')).toContainText('Edit view');
+});
+
+test('right-clicking rendered text opens the formatting menu there', async ({ page }) => {
+  await live(page, 'First block.\n\nSecond block here.\n', 0);
+  const at = await page.evaluate(() => {
+    const p = Array.from(document.querySelectorAll('#liveLayer p'))
+      .find((el) => el.textContent.startsWith('Second'));
+    const r = p.getBoundingClientRect();
+    return { x: r.left + 20, y: r.top + r.height / 2 };
+  });
+  await page.mouse.click(at.x, at.y, { button: 'right' });
+  await expect(page.locator('#ctxMenu')).toBeVisible();
+  // The caret moved to what was right-clicked, so the menu acts on that block.
+  expect((await liveState(page)).gapIndex).toBe(2);
+});

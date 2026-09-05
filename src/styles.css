@@ -248,8 +248,10 @@ body[data-tabs="single"] #tabbar { display: none; }
 body[data-view="edit"]  #main { grid-template-columns: 1fr; }
 body[data-view="split"] #main { grid-template-columns: 1fr 1fr; }
 body[data-view="read"]  #main { grid-template-columns: 1fr; }
+body[data-view="live"]  #main { grid-template-columns: 1fr; }
 
 body[data-view="edit"]  #previewPane { display: none; }
+body[data-view="live"]  #previewPane { display: none; }
 body[data-view="read"]  #editorPane  { display: none; }
 
 #editorPane, #previewPane {
@@ -278,6 +280,57 @@ body[data-view="split"] #editorPane { border-right: 1px solid var(--border); }
 }
 
 .editor[hidden] { display: none; }
+
+/* ---------------- Live view ---------------- */
+/* The rendered column scrolls; the editor is absolutely positioned inside it,
+   shrunk to the block the caret is in. `overflow-y: scroll` rather than `auto`
+   so the scrollbar never appears or disappears mid-measurement — that would
+   change the wrap width and with it every height this view has just computed. */
+
+body[data-view="live"] #editorPane {
+  overflow-y: scroll;
+  overflow-x: hidden;
+}
+
+#liveLayer { display: none; }
+
+body[data-view="live"] #liveLayer {
+  display: block;
+  position: relative;
+  padding: 18px 22px;
+}
+
+body[data-view="live"] .editor {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: auto;
+  overflow: hidden;
+  padding-top: 0;
+  padding-bottom: 0;
+  background: transparent;
+  z-index: 2;
+}
+
+/* Column selection has no meaning over rendered blocks, so its overlay is
+   simply not part of this view. */
+body[data-view="live"] #selOverlay { display: none; }
+
+/* Measuring must not stretch the pane's scroll height, so the mirror leaves
+   the scrolling content entirely. Only differences between its rects are used
+   here, so where it actually sits does not matter. */
+body[data-view="live"] #selMirror { position: fixed; }
+
+/* The block the caret is in. Height is set to match its raw source, and
+   `overflow: hidden` both clips the rendered form away and stops its margins
+   collapsing out — the gap has to be exactly as tall as the text it reveals. */
+.live-gap {
+  visibility: hidden;
+  overflow: hidden;
+  margin: 0;
+}
+
+body[data-view="live"] .live-block input.task-list-item-checkbox { cursor: pointer; }
 
 /* Never painted: it exists only so ranges can be measured against it. */
 #selMirror {

@@ -2,13 +2,37 @@
 
 A fast, minimal reader and editor for Markdown files.
 
-## The three views
+## The four views
 
 | View | Shortcut | What it's for |
 | ---- | -------- | ------------- |
 | **Read** | Ctrl+3 | Rendered document only. Files opened from Explorer start here. |
 | **Edit** | Ctrl+1 | Raw Markdown text only. New files start here. |
 | **Split** | Ctrl+2 | Editor on the left, live preview on the right. |
+| **Live** | Ctrl+4 | Rendered *and* editable: see [Live view](#live-view). |
+
+## Live view
+
+The document looks the way it will read, but you can type into it. Whichever
+block the cursor is in turns back into raw Markdown, so you edit the real
+`## heading` or `- [ ] item` while everything around it stays rendered. Move
+the cursor away and that block renders again.
+
+- **Click anywhere** in the text to put the cursor there. The block you clicked
+  opens for editing.
+- **Click a checkbox** to tick it off. That edits the file — and only that —
+  so the cursor and your place on the page do not move.
+- **Ctrl+click a link** to open it in your browser. A plain click puts the
+  cursor in the link text, so link text stays editable like everything else.
+- Everything else behaves as it does in Edit view: the toolbar, the right-click
+  menu, every shortcut, Enter continuing a list, and Ctrl+Z.
+
+A "block" is one paragraph, heading, list, table, quote or code fence — the
+whole thing, not one line of it. Two things live view does not do: it does not
+colour the Markdown in the block you are editing, and column selection is not
+available there (Ctrl+1 for Edit view, which has it). Very long documents —
+a few thousand lines — start to feel the cost of laying out both forms at once;
+Edit and Split views stay fast at any size.
 
 ## Tabs
 
@@ -68,7 +92,8 @@ it out across every row at once.
 
 ## Right-click menu
 
-Right-clicking in the editor opens a formatting menu: **Format** for bold,
+Right-clicking in the editor opens a formatting menu (in live view, right-click
+inside the open block): **Format** for bold,
 italic, strikethrough, highlight, code and clear-formatting; **Paragraph**
 for lists, headings and quotes; **Insert** for tables, rules and images.
 The Paragraph submenu ticks the style the cursor is currently in.
@@ -117,7 +142,7 @@ number, or checkbox. Press **Enter on an empty item** to end the list.
 
 | Shortcut | Action |
 | -------- | ------ |
-| Ctrl+1 / 2 / 3 | Edit / Split / Read view |
+| Ctrl+1 / 2 / 3 / 4 | Edit / Split / Read / Live view |
 | Ctrl+Shift+D | Cycle theme: System → Light → Dark |
 | Ctrl+Z / Ctrl+Y | Undo / Redo |
 | Ctrl+P | Print the rendered document |
