@@ -1331,6 +1331,28 @@ test('the banner survives read view, which is where it matters most',
     await expect(page.locator('#readOnlyBanner')).toBeVisible();
   });
 
+test('the toolbar cannot edit a read-only document either', async ({ page }) => {
+  // The textarea refuses keystrokes, but execCommand's setRangeText fallback
+  // does not honour readOnly — so every toolbar button and formatting hotkey
+  // was a way round that refusal, leaving the document dirty and the user told
+  // only at save. That is the failure the read-only guard exists to prevent.
+  await boot(page, lossyOpts());
+  await page.keyboard.press('Control+1');
+  const before = await editorValue(page);
+  await page.evaluate(() => {
+    const ed = document.getElementById('editor');
+    ed.focus();
+    ed.setSelectionRange(2, 6);
+  });
+  await page.locator('#btn-bold').click();
+  expect(await editorValue(page)).toBe(before);
+  await page.keyboard.press('Control+b');
+  expect(await editorValue(page)).toBe(before);
+  await expect(page.locator('#toast')).toContainText('Read-only');
+  // Still not dirty, so the tab shows no unsaved marker.
+  await expect(page.locator('#readOnlyBanner')).toBeVisible();
+});
+
 // ---------------------------------------------------------------
 // Editor context menu
 // ---------------------------------------------------------------

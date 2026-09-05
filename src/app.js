@@ -882,6 +882,16 @@
   // undo/redo stack (Ctrl+Z / Ctrl+Y) keeps working.
 
   function replaceRange(start, end, text, selStart, selEnd) {
+    // execCommand honours readOnly; setRangeText does not. So the fallback
+    // below is a way around the textarea's own refusal, and every toolbar
+    // button, formatting hotkey and live-view checkbox reaches it. Refusing
+    // here, where all of those meet, is what keeps "cannot become dirty in the
+    // first place" true for routes that are not keystrokes.
+    if (editor.readOnly) {
+      const d = activeDoc();
+      showToast((d && d.readOnly) || 'This document is read-only', true);
+      return;
+    }
     clearBlock();
     editor.focus();
     editor.setSelectionRange(start, end);

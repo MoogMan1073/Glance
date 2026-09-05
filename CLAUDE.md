@@ -26,7 +26,7 @@ literal token ever committed.
 ## Run it
 
 ```bash
-cd tests && npm ci && npx playwright test     # 85 tests
+cd tests && npm ci && npx playwright test     # 114 tests
 npm run dev                                    # the app (needs Rust + WebView2)
 npm run build                                  # installer + portable exe (Windows)
 ```
@@ -147,6 +147,16 @@ defensible where it was written, and the consequence lived one function away.
   document that genuinely discusses U+FFFD saved over a valid file passes.
   Refusing every write to a non-UTF-8 path would have been the obvious rule and
   is the one that gets switched off.
+- **`readOnly` on the textarea stops keystrokes and nothing else, so the
+  refusal also lives in `replaceRange`.** `execCommand` honours `readOnly` and
+  returns false; `setRangeText` — the fallback one line below it — does not,
+  and writes anyway. So every toolbar button, every formatting hotkey and live
+  view's checkbox click went *around* the textarea's own refusal: Bold on a
+  lossily-read file turned `# caf\u{FFFD} notes` into `# **caf\u{FFFD}** notes`,
+  dirty, with the backend refusal the only thing left to catch it at save —
+  which is precisely the "type for an hour and then be told" this guard exists
+  to prevent. One `setRangeText` call site in the file, so one place to refuse.
+  Falsified by neutering the check: the toolbar test fails.
 - **Save As is the way out, so it has to actually let go.** The document is then
   bound to a file this app wrote and can reproduce exactly, so `readOnly` clears
   on a successful write to a different path. A remedy that leaves the copy
@@ -197,6 +207,26 @@ inside `tauriStub`'s template literal wrote `` `{ text, lossy }` `` in backticks
 which **ends the template literal** — and the parse error named a line thirty
 lines from the cause, reported as `No tests found`. No backticks inside that
 stub.
+
+## Live view is a fourth view, and three things about it are load-bearing
+
+`docs/live-preview-notes.md` is the design record and the measurements. The
+rules that are easy to break without noticing:
+
+- **The textarea is never moved, re-parented, or assigned `.value`** — it holds
+  the whole document and is shrunk to the caret's block and parked over the gap
+  that block leaves in a rendered column. Re-parenting a textarea destroys its
+  native undo stack (measured, in the notes), so any change that reaches for
+  `appendChild` here silently costs per-tab undo, and nothing on screen says so.
+- **`#selMirror` becomes `position: fixed` in live view**, because an absolutely
+  positioned full-height mirror is inside `#editorPane`'s scrollable overflow and
+  would stretch its scroll range by the height of the raw document (79,628px on
+  a large-document probe). Only differences between its rects are used in this
+  view, so where it sits does not matter — but it must not be in the scroller.
+- **The reveal is driven off `keydown`/`keyup`, not `selectionchange` alone.**
+  Chromium throttles `selectionchange`: six arrow presses produced two events,
+  and the reveal fell several lines behind the caret. A caret-following feature
+  built on that event alone will look broken and test green if the test waits.
 
 ## Things the Playwright suite cannot see
 
