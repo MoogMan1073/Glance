@@ -33,6 +33,15 @@ jobs:
       # check rather than waiting for a release.
       - name: The notices cover what ships, and ship with it
         run: node scripts/check-notices.mjs
+      # The `repository` URL is a literal in both manifests, because neither
+      # format can derive one -- and a wrong one is silent: nothing reads it at
+      # runtime, so the app builds and runs while pointing every reader at a
+      # repository that is not this one. A RENAME survives on GitHub's redirect;
+      # a repository recreated fresh under another account does not. Git is the
+      # oracle rather than the other manifest, which would agree while both were
+      # stale together. Needs no dependencies, so it runs with the two above.
+      - name: The repository URLs name this checkout's own account
+        run: node scripts/check-metadata.mjs
       - name: Install test dependencies
         working-directory: tests
         run: npm ci

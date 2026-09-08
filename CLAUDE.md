@@ -8,7 +8,7 @@ help. This file is the standing rules — the things that are easy to break
 without noticing.
 
 **This is one of TWO public repositories in the portfolio** — Glance and
-**Redline** (`MoogMan1073/Redline`, formerly `PDF_MarkupApp`). Anything
+**Redline** (formerly `PDF_MarkupApp`). Anything
 committed here is world-readable, permanently, including in history. There are
 no customer files, no exports and no internal documents in it and it must stay
 that way.
@@ -99,6 +99,55 @@ disagree with the first.
 - Falsified four ways: `package.json` bumped alone, `Cargo.toml` alone,
   `package-lock.json`'s `packages[""]` alone, and a site made unreadable. All
   four exit 1.
+
+## The account is written down twice, and nothing would have said when it went stale
+
+Ahead of moving these repositories to a company account, every site naming
+`MoogMan1073` was swept. **Glance has no executing one** — no workflow checks a
+sibling out, nothing installs from git, nothing dispatches — which is the
+honest headline: the move breaks no build here. What it leaves is two
+`repository` declarations, `package.json`'s `repository.url` and
+`src-tauri/Cargo.toml`'s `[package] repository`, and both are **literals
+because neither format can derive a URL**.
+
+**A wrong one is silent.** Nothing reads either field at runtime, so the app
+builds, installs and launches exactly as before while pointing every reader at
+a repository that is not this one — and this is one of the two PUBLIC
+repositories, so that URL is what somebody follows. A repository RENAME would
+survive it on GitHub's redirect, which is precisely why it has never mattered;
+a repository recreated fresh under another account leaves no redirect at all.
+
+`scripts/check-metadata.mjs`, run by `build.yml` beside `check-versions.mjs`
+and `check-notices.mjs` — the same argument those two already make, that a gate
+firing only at release time finds out too late.
+
+- **THE ORACLE IS GIT, never the other manifest.** Comparing the two files
+  against each other says only that they agree, which they would while both
+  were stale together — *a staleness check that consults the same source as the
+  claim will agree with it*. The arm that makes both wrong at once fires.
+- **Three states, never two.** A checkout with no GitHub `origin` — a tarball,
+  a fork pushed elsewhere — cannot answer the question, and that is not the
+  same as answering it correctly. It reads and parses both files, says it could
+  not compare them, and exits 0; failing a build for having no remote is how
+  this becomes a nuisance somebody removes.
+- **The `[package]` anchor rather than the first `repository =`**, which is
+  `check-versions.mjs`'s own recorded rule one field over: the first match in a
+  Cargo manifest becomes a dependency's the moment one is added above it.
+- **A floor at exactly two.** *"Every declaration agrees"* is true of a run that
+  found none, and a renamed key is exactly how this check would stop reading
+  anything while still printing OK. Both arms fire, and the message names which
+  two it expects.
+- **AND THE PARSE NEEDED ITS OWN FLOOR, which the falsification found.** The arm
+  that gives `accountFromUrl` a hardcoded fallback came back **DEAD** — because
+  *both sides of the comparison go through it*, so one that answers a constant
+  makes the manifests agree with git whatever any of the three says. On a
+  correct tree every URL matches and the fallback is unreachable, so there is
+  nothing for an injection to injure. Eight URL shapes are asserted on the parse
+  directly now, and the same arm fires.
+
+Falsified six ways, each on its own arm and every one firing: either manifest
+naming another account, both naming it together, `package.json`'s key removed,
+the Cargo `[package]` anchor renamed, and the parse no longer discriminating.
 
 ## The notices have to ship INSIDE the installer
 
