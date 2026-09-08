@@ -10,6 +10,10 @@ const executablePath =
 
 module.exports = defineConfig({
   testDir: '.',
+  // Named explicitly rather than globbed: scratch specs written into tests/
+  // during exploration would otherwise join the suite and run in CI. Add new
+  // suites here deliberately.
+  testMatch: ['app.spec.js'],
   timeout: 20000,
   fullyParallel: true,
   reporter: [['list']],

@@ -11,3 +11,6 @@ tests/playwright-report/
 test-results/
 playwright-report/
 tests/zz-*
+
+# Scratch Playwright config used while probing; never part of the suite.
+tests/zz.config.js

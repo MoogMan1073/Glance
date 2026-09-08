@@ -248,8 +248,10 @@ body[data-tabs="single"] #tabbar { display: none; }
 body[data-view="edit"]  #main { grid-template-columns: 1fr; }
 body[data-view="split"] #main { grid-template-columns: 1fr 1fr; }
 body[data-view="read"]  #main { grid-template-columns: 1fr; }
+body[data-view="live"]  #main { grid-template-columns: 1fr; }
 
 body[data-view="edit"]  #previewPane { display: none; }
+body[data-view="live"]  #previewPane { display: none; }
 body[data-view="read"]  #editorPane  { display: none; }
 
 #editorPane, #previewPane {
@@ -278,6 +280,57 @@ body[data-view="split"] #editorPane { border-right: 1px solid var(--border); }
 }
 
 .editor[hidden] { display: none; }
+
+/* ---------------- Live view ---------------- */
+/* The rendered column scrolls; the editor is absolutely positioned inside it,
+   shrunk to the block the caret is in. `overflow-y: scroll` rather than `auto`
+   so the scrollbar never appears or disappears mid-measurement — that would
+   change the wrap width and with it every height this view has just computed. */
+
+body[data-view="live"] #editorPane {
+  overflow-y: scroll;
+  overflow-x: hidden;
+}
+
+#liveLayer { display: none; }
+
+body[data-view="live"] #liveLayer {
+  display: block;
+  position: relative;
+  padding: 18px 22px;
+}
+
+body[data-view="live"] .editor {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: auto;
+  overflow: hidden;
+  padding-top: 0;
+  padding-bottom: 0;
+  background: transparent;
+  z-index: 2;
+}
+
+/* Column selection has no meaning over rendered blocks, so its overlay is
+   simply not part of this view. */
+body[data-view="live"] #selOverlay { display: none; }
+
+/* Measuring must not stretch the pane's scroll height, so the mirror leaves
+   the scrolling content entirely. Only differences between its rects are used
+   here, so where it actually sits does not matter. */
+body[data-view="live"] #selMirror { position: fixed; }
+
+/* The block the caret is in. Height is set to match its raw source, and
+   `overflow: hidden` both clips the rendered form away and stops its margins
+   collapsing out — the gap has to be exactly as tall as the text it reveals. */
+.live-gap {
+  visibility: hidden;
+  overflow: hidden;
+  margin: 0;
+}
+
+body[data-view="live"] .live-block input.task-list-item-checkbox { cursor: pointer; }
 
 /* Never painted: it exists only so ranges can be measured against it. */
 #selMirror {
@@ -482,12 +535,22 @@ body[data-view="split"] #editorPane { border-right: 1px solid var(--border); }
   flex: 1 1 auto;
 }
 
-/* ---------------- Tab context menu ---------------- */
+/* ---------------- Context menus ---------------- */
 
-#tabMenu {
+/* Positioned at the cursor and sized to nothing: the panels inside are
+   absolutely placed, so submenus can sit beside their parent. */
+#ctxMenu {
   position: fixed;
   z-index: 150;
-  min-width: 190px;
+}
+
+#ctxMenu[hidden] { display: none; }
+
+.menu-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  min-width: 208px;
   padding: 4px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -496,12 +559,17 @@ body[data-view="split"] #editorPane { border-right: 1px solid var(--border); }
   user-select: none;
 }
 
-#tabMenu[hidden] { display: none; }
+/* The root panel stays in flow so #ctxMenu takes its size; only submenus are
+   absolutely placed, relative to it. A zero-size container would also read as
+   invisible to anything measuring it. */
+.menu-root { position: static; }
 
 .menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 9px;
   width: 100%;
-  padding: 7px 12px;
+  padding: 6px 9px;
   border: none;
   border-radius: 5px;
   background: transparent;
@@ -510,11 +578,33 @@ body[data-view="split"] #editorPane { border-right: 1px solid var(--border); }
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.menu-item:hover:not(:disabled) { background: var(--btn-hover); }
+.menu-item:hover:not(:disabled),
+.menu-item.open { background: var(--btn-hover); }
 .menu-item:disabled { color: var(--fg-muted); cursor: default; }
-.menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+
+.menu-item svg { width: 15px; height: 15px; fill: currentColor; flex: 0 0 auto; opacity: 0.85; }
+.menu-icon-gap { width: 15px; flex: 0 0 auto; }
+.menu-label { flex: 1 1 auto; }
+
+.menu-accel,
+.menu-arrow,
+.menu-check {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.menu-arrow { font-size: 15px; line-height: 1; }
+.menu-check { color: var(--accent); font-size: 13px; }
+
+.menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
 
 /* While a tab is being dragged past the window edge, say so. */
 body.detaching, body.detaching .tab { cursor: copy; }
