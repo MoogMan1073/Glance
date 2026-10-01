@@ -244,6 +244,7 @@
     if (!d) return;
     if (d.html === null) d.html = md.render(d.content, { basePath: d.path });
     preview.innerHTML = d.html;
+    addCopyButtons(preview);
     renderedId = d.id;
     if (restoreScroll) previewPane.scrollTop = d.previewScroll;
   }
@@ -648,6 +649,19 @@
       if (navigator.clipboard && navigator.clipboard.readText) return await navigator.clipboard.readText();
     } catch (e) { /* fall through */ }
     return null;
+  }
+
+  async function clipboardWrite(text) {
+    try {
+      if (T && T.clipboardManager) { await T.clipboardManager.writeText(text); return true; }
+    } catch (e) { /* fall through */ }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* fall through */ }
+    return false;
   }
 
   function editorCut() {
@@ -2105,7 +2119,71 @@
     // Everything else (mailto:, relative paths) is intentionally ignored.
   }
 
-  preview.addEventListener('click', (e) => handleRenderedClick(e, preview));
+  // ---------------- Copy button on code blocks ----------------
+  // Added to the DOM after the render rather than by a markdown-it rule, so
+  // `doc.html` stays the document's own HTML. Three things read that string —
+  // live view's block column, the print path and the render tests — and a
+  // button baked into it would appear in all of them. CSS shows it in read
+  // view alone; this runs whenever the pane is rendered.
+
+  const COPY_SVG =
+    '<svg viewBox="0 0 16 16" aria-hidden="true">'
+    + '<rect x="5.75" y="1.75" width="8.5" height="8.5" rx="1.75"/>'
+    + '<path d="M5.75 5.75H3.5A1.75 1.75 0 0 0 1.75 7.5v5A1.75 1.75 0 0 0 3.5 14.25h5'
+    + 'a1.75 1.75 0 0 0 1.75-1.75v-2.25"/></svg>';
+
+  const COPIED_SVG =
+    '<svg viewBox="0 0 16 16" aria-hidden="true">'
+    + '<path d="M2.75 8.5 6.25 12l7-7.5"/></svg>';
+
+  function addCopyButtons(container) {
+    for (const pre of container.querySelectorAll('pre')) {
+      if (!pre.querySelector('code')) continue;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'copy-btn';
+      btn.title = 'Copy code';
+      btn.setAttribute('aria-label', 'Copy code');
+      btn.innerHTML = COPY_SVG;
+      // Inside the <pre>, which is `position: relative`, rather than in a
+      // wrapper around it: no element is inserted between the pane and the
+      // document's own nodes, so nothing a stylesheet or a test selects moves.
+      pre.appendChild(btn);
+    }
+  }
+
+  // Keyed by element so a button replaced by the next render takes its pending
+  // timer with it, rather than the timer outliving the node it would reset.
+  const copyTimers = new WeakMap();
+
+  function resetCopyButton(btn) {
+    btn.classList.remove('copied');
+    btn.innerHTML = COPY_SVG;
+    btn.title = 'Copy code';
+    btn.setAttribute('aria-label', 'Copy code');
+  }
+
+  async function copyCodeBlock(btn) {
+    const code = btn.closest('pre').querySelector('code');
+    if (!code) return;
+    // A fenced block renders with the newline that ended it still attached.
+    // Pasted into a shell, that newline runs the command rather than leaving
+    // it on the prompt to read first, so it does not travel.
+    const text = code.textContent.replace(/\n$/, '');
+    if (!(await clipboardWrite(text))) { showToast('Could not copy', true); return; }
+    clearTimeout(copyTimers.get(btn));
+    btn.classList.add('copied');
+    btn.innerHTML = COPIED_SVG;
+    btn.title = 'Copied';
+    btn.setAttribute('aria-label', 'Copied');
+    copyTimers.set(btn, setTimeout(() => { copyTimers.delete(btn); resetCopyButton(btn); }, 1200));
+  }
+
+  preview.addEventListener('click', (e) => {
+    const btn = e.target.closest('.copy-btn');
+    if (btn) { copyCodeBlock(btn); return; }
+    handleRenderedClick(e, preview);
+  });
   helpContent.addEventListener('click', (e) => handleRenderedClick(e, helpContent));
 
   // ---------------- Scroll sync (split view) ----------------

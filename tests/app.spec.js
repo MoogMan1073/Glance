@@ -1947,3 +1947,112 @@ test('dragging across rendered text selects it in the editor', async ({ page }) 
   await page.keyboard.press('Control+b');
   expect(await editorValue(page)).toContain('**');
 });
+
+// ---------------------------------------------------------------
+// Copy button on code blocks
+//
+// The button is added to the DOM after the render rather than by a markdown-it
+// rule, so `doc.html` stays the document's own HTML. Three things read that
+// string — live view's block column, the print path and the render tests — and
+// a button baked into it would turn up in all three.
+// ---------------------------------------------------------------
+
+const CODE_DOC = '# Setup\n\nThen run:\n\n```bash\nnpm install\nnpm run dev\n```\n\nAnd:\n\n```json\n{ "ok": true }\n```\n';
+
+async function bootRead(page, text, opts) {
+  await boot(page, opts);
+  await setEditor(page, text ?? CODE_DOC, 0, 0);
+  await page.keyboard.press('Control+3');
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'read');
+  return page;
+}
+
+const clipboard = (page) => page.evaluate(() => window.__TAURI_TEST__.clipboardText);
+
+test('the copy button puts the block on the clipboard without its closing newline',
+  async ({ page }) => {
+    await bootRead(page);
+    // Every fenced block gets one, and inline code does not.
+    await expect(page.locator('#preview .copy-btn')).toHaveCount(2);
+    await page.locator('#preview pre').first().hover();
+    await page.locator('#preview .copy-btn').first().click();
+    // A fenced block renders with the newline that ended it still attached;
+    // pasted into a shell that newline runs the command instead of leaving it
+    // on the prompt to read, so it is the one character that must not travel.
+    await expect.poll(() => clipboard(page)).toBe('npm install\nnpm run dev');
+
+    // The second block carries its own text, not the first one's.
+    await page.locator('#preview pre').nth(1).hover();
+    await page.locator('#preview .copy-btn').nth(1).click();
+    await expect.poll(() => clipboard(page)).toBe('{ "ok": true }');
+  });
+
+test('the button confirms the copy and goes back to offering one', async ({ page }) => {
+  await bootRead(page);
+  const btn = page.locator('#preview .copy-btn').first();
+  await expect(btn).toHaveAttribute('aria-label', 'Copy code');
+  await page.locator('#preview pre').first().hover();
+  await btn.click();
+  await expect(btn).toHaveAttribute('aria-label', 'Copied');
+  await expect(btn).toHaveClass(/copied/);
+  // And it resets, or the next block of code would look already-copied.
+  await expect(btn).toHaveAttribute('aria-label', 'Copy code', { timeout: 4000 });
+  await expect(btn).not.toHaveClass(/copied/);
+});
+
+test('a clipboard that refuses the write says so rather than claiming success',
+  async ({ page }) => {
+    await bootRead(page);
+    await page.evaluate(() => {
+      window.__TAURI__.clipboardManager.writeText = async () => { throw new Error('denied'); };
+      // The browser fallback has to fail too, or this measures nothing.
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    });
+    await page.locator('#preview pre').first().hover();
+    const btn = page.locator('#preview .copy-btn').first();
+    await btn.click();
+    await expect(page.locator('#toast')).toContainText('Could not copy');
+    // No tick: a confirmation over a failed copy is worse than no button.
+    await expect(btn).not.toHaveClass(/copied/);
+    await expect(btn).toHaveAttribute('aria-label', 'Copy code');
+  });
+
+test('the button belongs to read view and to no other', async ({ page }) => {
+  await bootRead(page);
+  const btn = page.locator('#preview .copy-btn').first();
+  await expect(btn).toBeVisible();
+
+  // Split view shows the same `#preview`, and the source is already on the
+  // left there. `display: none` rather than transparent, so it is also out of
+  // the tab order of a view that does not offer it.
+  await page.keyboard.press('Control+2');
+  await expect(btn).toBeHidden();
+  await expect
+    .poll(() => page.evaluate(() =>
+      getComputedStyle(document.querySelector('#preview .copy-btn')).display))
+    .toBe('none');
+
+  await page.keyboard.press('Control+3');
+  await expect(btn).toBeVisible();
+});
+
+test('live view renders the same code block with no button on it', async ({ page }) => {
+  // The claim behind adding the button after the render: `doc.html` is the
+  // document's own HTML, and live view builds its column from the same tokens.
+  await bootRead(page);
+  await page.keyboard.press('Control+4');
+  await expect(page.locator('body')).toHaveAttribute('data-view', 'live');
+  await expect(page.locator('#liveLayer pre')).not.toHaveCount(0);
+  await expect(page.locator('#liveLayer .copy-btn')).toHaveCount(0);
+});
+
+test('the button does not land on paper', async ({ page }) => {
+  await bootRead(page);
+  const btn = page.locator('#preview .copy-btn').first();
+  await expect(btn).toBeVisible();
+  // Print un-hides `#previewPane`, so the assertion that matters is made under
+  // print media — paper is the one output of this app nobody can check first.
+  await page.emulateMedia({ media: 'print' });
+  await expect(page.locator('#preview')).toBeVisible();
+  await expect(btn).toBeHidden();
+});

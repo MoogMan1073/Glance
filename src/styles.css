@@ -420,6 +420,7 @@ body[data-view="live"] .live-block input.task-list-item-checkbox { cursor: point
   border-radius: 6px;
   padding: 12px 14px;
   overflow-x: auto;
+  position: relative;   /* the copy button is positioned against this */
 }
 
 .markdown-body pre code {
@@ -632,8 +633,72 @@ body.detaching .tab[data-dragging="true"] { opacity: 0.5; }
 
 /* ---------------- Print: rendered document only ---------------- */
 
+/* ---------------- Copy button on code blocks ---------------- */
+
+/* Read view only, which is what it is for: in split view the source is already
+   on the left, and in edit and live view there is no `#preview` on screen.
+   `display: none` rather than hiding it, so it is not in the tab order of a
+   view that does not offer it. */
+.copy-btn { display: none; }
+
+body[data-view="read"] .markdown-body pre > .copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  /* Invisible until the block is pointed at, so reading is not covered in
+     buttons; `pointer-events` follows, or an invisible target would still
+     take the click. The parent is what gets hovered, so the button can
+     always be reached. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+body[data-view="read"] .markdown-body pre:hover > .copy-btn,
+body[data-view="read"] .markdown-body pre > .copy-btn:focus-visible,
+body[data-view="read"] .markdown-body pre > .copy-btn.copied {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+body[data-view="read"] .markdown-body pre > .copy-btn:hover { color: var(--fg); }
+body[data-view="read"] .markdown-body pre > .copy-btn.copied { color: var(--accent); }
+
+/* Stroked rather than filled, because two overlapping outlines is the icon. */
+.copy-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* A pointer that cannot hover never reveals it, so it is simply always there. */
+@media (hover: none) {
+  body[data-view="read"] .markdown-body pre > .copy-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 @media print {
   #toolbar, #tabbar, #editorPane, #helpOverlay, #toast { display: none !important; }
+  /* Print un-hides `#previewPane`, so without this the button lands on paper —
+     and paper is the one output of this app nobody can check first. */
+  .copy-btn { display: none !important; }
   html, body { overflow: visible; height: auto; }
   body { display: block; background: #fff; color: #000; }
   #main { display: block; }
