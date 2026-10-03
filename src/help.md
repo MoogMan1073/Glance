@@ -364,6 +364,18 @@ X^2^
 
 ---
 
+## Copying a code block
+
+Point at any fenced code block in **Read view** and a copy button appears in
+its top-right corner — two overlapping squares. Click it and the block's text
+is on the clipboard; the button shows a tick for a moment and goes back.
+
+The newline that closed the fence is left behind, so pasting a command into a
+terminal puts it on the prompt to read rather than running it.
+
+Read view only. Split view already has the source on the left, and edit and
+live view have no rendered pane to put a button on.
+
 ## Notes
 
 - Images referenced by documents render in the preview: web URLs, absolute

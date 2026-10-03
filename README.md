@@ -31,6 +31,9 @@ reading it in well under a second.
 - **Word-like toolbar** — headings, bold, italic, strikethrough, highlight,
   inline code, code blocks, links, images, blockquotes, bulleted / numbered /
   checkbox lists, tables, horizontal rules.
+- **Copy button on code blocks** — in Read view, point at a fenced block and
+  copy it in one click. The fence's closing newline stays behind, so a pasted
+  command lands on the prompt instead of running.
 - **Full cheat-sheet rendering** — tables, fenced code blocks with syntax
   coloring, footnotes, heading IDs, definition lists, strikethrough, task
   lists, emoji (`:joy:`), ==highlight==, subscript, superscript.
